@@ -1,0 +1,82 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - storageclass-gp3.yaml
+  - grafana/loki-pvc.yaml
+  - grafana/grafana-pvc.yaml
+  - prometheus/prometheus-pvc.yaml
+  - metrics-server/rbac.yaml
+  - metrics-server/service.yaml
+  - metrics-server/deployment.yaml
+  - metrics-server/apiservice.yaml
+  - cluster-autoscaler/rbac.yaml
+  - cluster-autoscaler/deployment.yaml
+  - external-secrets/secretstore.yaml
+  - external-secrets/mongo-root-external-secret.yaml
+  - external-secrets/mongo-app-external-secret.yaml
+  - mongo/service.yaml
+  - mongo/statefulset.yaml
+  - mongo/create-app-user-job.yaml
+  - mongo/rotate-app-user-rbac.yaml
+  - mongo/rotate-app-user-cronjob.yaml
+  - mongo/rotate-root-user-cronjob.yaml
+  - backend/configmap.yaml
+  - backend/service.yaml
+  - backend/deployment.yaml
+  - frontend/service.yaml
+  - frontend/deployment.yaml
+  - ingress.yaml
+  - backend/hpa.yaml
+  - frontend/hpa.yaml
+  - prometheus/rbac.yaml
+  - prometheus/configmap.yaml
+  - prometheus/basic-auth-secret.yaml
+  - prometheus/nginx-config.yaml
+  - prometheus/service.yaml
+  - prometheus/service-internal.yaml
+  - prometheus/deployment.yaml
+  - grafana/loki.yaml
+  - grafana/alloy.yaml
+  - grafana/datasources.yaml
+  - grafana/dashboards.yaml
+  - grafana/service.yaml
+  - grafana/ingress.yaml
+  - prometheus/ingress.yaml
+  - grafana/deployment.yaml
+
+configMapGenerator:
+  - name: mongo-rotate-script
+    namespace: dev
+    files:
+      - rotate.sh=mongo/scripts/rotate-app-user.sh
+    options:
+      disableNameSuffixHash: true
+  - name: mongo-root-rotate-script
+    namespace: dev
+    files:
+      - rotate-root.sh=mongo/scripts/rotate-root-user.sh
+    options:
+      disableNameSuffixHash: true
+  - name: grafana-dashboards
+    namespace: dev
+    files:
+      - app-logs.json=grafana/dashboards/app-logs.json
+      - mongodb-storage.json=grafana/dashboards/mongodb-storage.json
+      - app-cpu-resources.json=grafana/dashboards/app-cpu-resources.json
+      - app-memory-resources.json=grafana/dashboards/app-memory-resources.json
+      - alloy-observability.json=grafana/dashboards/alloy-observability.json
+      - loki-resources.json=grafana/dashboards/loki-resources.json
+    options:
+      disableNameSuffixHash: true
+
+images:
+  - name: demo-backend
+    newName: PLACEHOLDER_ECR_REGISTRY/dev-demo-backend
+    newTag: latest
+  - name: demo-frontend
+    newName: PLACEHOLDER_ECR_REGISTRY/dev-demo-frontend
+    newTag: latest
+
+

@@ -1,0 +1,8 @@
+aws_region          = "us-east-1"
+cluster_name        = "demo-eks-dev"
+environment         = "dev"
+state_bucket        = "<terraform-state-bucket>"
+acm_certificate_arn = "arn:aws:acm:<region>:<account-id>:certificate/<certificate-id>"
+
+include_current_public_ip = true
+public_access_cidrs       = []

@@ -1,0 +1,86 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mongo-app-user-script
+  namespace: dev
+data:
+  create-app-user.js: |
+    try {
+      const dbName = "be_db";
+      const appUser = process.env.MONGO_APP_USERNAME;
+      const appPassword = process.env.MONGO_APP_PASSWORD;
+      if (!appUser || !appPassword) {
+        print("ERROR: MONGO_APP_USERNAME or MONGO_APP_PASSWORD not set");
+        quit(1);
+      }
+      const adminDb = db.getSiblingDB("admin");
+      const existing = adminDb.getUser(appUser);
+      if (existing) {
+        adminDb.updateUser(appUser, {
+          pwd: appPassword,
+          roles: [{ role: "readWrite", db: dbName }]
+        });
+        print("Updated existing app_user: " + appUser);
+      } else {
+        adminDb.createUser({
+          user: appUser,
+          pwd: appPassword,
+          roles: [{ role: "readWrite", db: dbName }]
+        });
+        print("Created app_user: " + appUser);
+      }
+      quit(0);
+    } catch (err) {
+      print("ERROR: " + err.message);
+      quit(1);
+    }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-mongo-app-user
+  namespace: dev
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: create-app-user
+          image: mongo:8.0.23
+          imagePullPolicy: IfNotPresent
+          command:
+            - mongosh
+            - --quiet
+            - --file
+            - /scripts/create-app-user.js
+          args:
+            - mongodb://$(MONGO_INITDB_ROOT_USERNAME):$(MONGO_INITDB_ROOT_PASSWORD)@mongo:27017/admin
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-root-secret
+                  key: MONGO_INITDB_ROOT_USERNAME
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-root-secret
+                  key: MONGO_INITDB_ROOT_PASSWORD
+            - name: MONGO_APP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-app-secret
+                  key: MONGO_APP_USERNAME
+            - name: MONGO_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-app-secret
+                  key: MONGO_APP_PASSWORD
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+      volumes:
+        - name: script
+          configMap:
+            name: mongo-app-user-script
