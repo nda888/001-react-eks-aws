@@ -101,9 +101,9 @@ Reusable modules include bootstrap state, networking, EKS, ECR, ALB controller, 
 
 `k8s-infra-aws-ssm/` contains manifests for:
 
-- namespace and gp3 StorageClass
-- frontend Deployment, Service, HPA
-- backend Deployment, Service, HPA, ConfigMap
+- Namespace and gp3 StorageClass
+- Frontend Deployment, Service, HPA
+- Backend Deployment, Service, HPA, ConfigMap
 - MongoDB StatefulSet, Service, PVC, app-user job, rotation CronJobs/RBAC
 - External Secrets resources backed by AWS SSM Parameter Store
 - ALB Ingress routing
