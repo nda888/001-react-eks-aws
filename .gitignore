@@ -37,3 +37,4 @@ terraform.rc
 
 # Local helper scripts
 script/create-pr-dev-to-main.sh
+script/merge-pr-dev-to-main.sh
