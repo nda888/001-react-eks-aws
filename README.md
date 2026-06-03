@@ -1,4 +1,4 @@
-React + Express + MongoDB demo app deployed on AWS EKS. Repository includes local Docker Compose app source, Terraform AWS infrastructure, Kubernetes manifests, and deployment helper scripts.
+Terraform-managed AWS EKS demo for a React, Express, and MongoDB app. Includes Docker Compose configuration, ECR image build scripts, Kubernetes manifests, ALB ingress, SSM-backed secrets, and observability stack.
 
 ## Stack
 
