@@ -1,5 +1,3 @@
-# 001-react-eks-aws
-
 React + Express + MongoDB demo app deployed on AWS EKS. Repository includes local Docker Compose app source, Terraform AWS infrastructure, Kubernetes manifests, and deployment helper scripts.
 
 ## Stack
@@ -8,7 +6,7 @@ React + Express + MongoDB demo app deployed on AWS EKS. Repository includes loca
 | --- | --- |
 | Frontend | React 17, Create React App, Axios, nginx runtime |
 | Backend | Node.js, Express, Mongoose, CORS |
-| Database | MongoDB 8.x |
+| Database | MongoDB 8.0.23 |
 | Local runtime | Docker Compose |
 | Cloud infrastructure | AWS, Terraform, EKS, ECR, ALB, SSM Parameter Store |
 | Kubernetes add-ons | AWS Load Balancer Controller, External Secrets, Metrics Server, Cluster Autoscaler |
@@ -32,6 +30,8 @@ React + Express + MongoDB demo app deployed on AWS EKS. Repository includes loca
 - `src/frontend/` — React client served by nginx in production.
 - `src/backend/` — Express API service using Mongoose.
 - `src/compose.yaml` — local frontend, backend, MongoDB stack.
+- `src/frontend/Dockerfile-local` — frontend image for local deployment.
+- `src/backend/Dockerfile-local` — backend image for local deployment.
 
 API routes:
 
@@ -47,6 +47,22 @@ From `src/`:
 
 ```bash
 docker compose up --build
+```
+
+Local deployment uses the frontend and backend `Dockerfile-local` files. Keep the Compose build config pointed at those files:
+
+```yaml
+services:
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile-local
+      target: development
+  backend:
+    build:
+      context: backend
+      dockerfile: Dockerfile-local
+      target: development
 ```
 
 Frontend package commands:
@@ -115,9 +131,9 @@ kubectl get ingress demo-react-eks -n dev -o jsonpath='{.status.loadBalancer.ing
 | --- | --- |
 | `deploy-infra-eks-aws-ssm-react.sh` | Deploy Terraform infrastructure, images, and Kubernetes manifests |
 | `deploy-img-fe-be-ecr-aws.sh` | Build and push frontend/backend images to ECR |
-| `deploy-img-backend-aws.sh` | Build and push backend image |
-| `deploy-img-frontend-aws.sh` | Build and push frontend image |
-| `deploy-ssm-grafana-dashboards.sh` | Deploy Grafana dashboard data through SSM flow |
+| `deploy-img-backend-aws.sh` | Build and push backend image to ECR |
+| `deploy-img-frontend-aws.sh` | Build and push frontend image to ECR |
+| `deploy-ssm-grafana-dashboards.sh` | Deploy Grafana dashboard data |
 
 Common required tools:
 
