@@ -88,7 +88,7 @@ npm run dev
 
 Dev services include:
 
-- networking
+- Networking
 - ECR repositories
 - EKS cluster
 - EKS post-install resources
