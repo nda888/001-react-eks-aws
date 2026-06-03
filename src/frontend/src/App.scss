@@ -1,0 +1,138 @@
+.App {
+  max-width: 900px;
+  margin: 0 auto;
+  text-align: center;
+
+  h1 {
+    margin: 0 0 10px;
+    font-size: 52px;
+    font-weight: 500;
+    line-height: 1.1;
+    text-align: center;
+    color: #1f2937;
+  }
+
+  .container-fluid {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+}
+
+.todo-app {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  background-color: #efefef;
+  border: 1px solid #d4d4d4;
+  border-radius: 4px;
+  padding: 8px 10px 10px;
+
+  .new-todo {
+    display: grid;
+    grid-template-columns: 1fr 136px;
+    align-items: stretch;
+    margin: 0;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #dee2e6;
+
+    input {
+      height: 52px;
+    }
+
+    button {
+      width: 136px;
+      height: 52px;
+      font-size: 14px;
+      font-weight: 500;
+      line-height: 1;
+      padding: 0;
+    }
+  }
+}
+
+.todo-list {
+  margin: 0;
+  border-radius: 0;
+
+  .list-group-item {
+    padding: 0;
+    border-left: none;
+    border-right: none;
+    border-radius: 0;
+  }
+
+  .list-group-item:first-child {
+    border-top: none;
+  }
+
+  .list-group-item.todo-item {
+    display: grid;
+    grid-template-columns: 1fr 136px;
+    align-items: stretch;
+    min-height: 52px;
+    text-align: left;
+  }
+}
+
+.todo-content {
+  display: flex;
+  grid-column: 1;
+  grid-row: 1;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+  background-color: #fff;
+  color: #1a1a1a;
+  cursor: pointer;
+
+  &.active {
+    background-color: #2979ff;
+    color: #fff;
+  }
+}
+
+.todo-action {
+  display: flex;
+  grid-column: 2;
+  grid-row: 1;
+  z-index: 1;
+  align-items: stretch;
+  justify-content: center;
+  background-color: #fff;
+
+  .btn {
+    width: 136px;
+    height: 100%;
+    border-radius: 4px;
+    padding: 0;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 1;
+  }
+
+  .btn-orange,
+  .btn-orange:focus,
+  .btn-orange:active,
+  .btn-orange:visited {
+    background-color: #f97316;
+    border-color: #ea580c;
+    color: #fff;
+  }
+
+  .btn-orange:hover {
+    background-color: #ea580c;
+    border-color: #c2410c;
+    color: #fff;
+  }
+}
+
+.btn-orange {
+  background-color: #f97316;
+  border-color: #ea580c;
+  color: #fff;
+
+  &:hover {
+    background-color: #ea580c;
+    color: #fff;
+  }
+}

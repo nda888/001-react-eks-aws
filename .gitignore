@@ -1,0 +1,39 @@
+# Documentation
+docs/*
+
+# Terraform generated artifacts
+*.tfstate
+*.tfstate.*
+*tfplan*
+.terraform/
+.terraform.lock.hcl
+
+# Terraform local/sensitive values
+*.tfvars
+*.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
+!*.tfvars.example
+*.backend.hcl
+plan.out
+*.plan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Secrets and environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*kubeconfig*
+
+# Local helper scripts
+script/create-pr-dev-to-main.sh

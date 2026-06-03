@@ -1,0 +1,1539 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# Configuration
+ENVIRONMENTS=("dev")
+MAX_MULTI_SERVICE=2
+
+# ========================================
+# Utility Functions
+# ========================================
+join_by() {
+    local delimiter="$1"
+    shift
+    local first=1
+    local item
+
+    for item in "$@"; do
+        if [[ $first -eq 1 ]]; then
+            printf "%s" "$item"
+            first=0
+        else
+            printf "%s%s" "$delimiter" "$item"
+        fi
+    done
+}
+
+array_contains() {
+    local needle="$1"
+    shift
+    local item
+
+    for item in "$@"; do
+        [[ "$item" == "$needle" ]] && return 0
+    done
+
+    return 1
+}
+
+env_upper() {
+    local env="$1"
+    echo "${env^^}"
+}
+
+service_dir() {
+    local env="$1"
+    local service="$2"
+    echo "envs/$env/services/$service"
+}
+
+plan_name() {
+    local service="$1"
+    echo "${service}-tfplan"
+}
+
+plan_path() {
+    local env="$1"
+    local service="$2"
+    echo "$(service_dir "$env" "$service")/$(plan_name "$service")"
+}
+
+print_terraform_command() {
+    local cmd="$1"
+    echo -e "${YELLOW}Command: ${PURPLE}${cmd}${NC}"
+}
+
+is_terraform_init_current() {
+    local dir="$1"
+    local init_state_file="$dir/.terraform/terraform.tfstate"
+    local backend_file="$dir/backend.tf"
+
+    [[ -f "$init_state_file" ]] || return 1
+
+    # Re-init if backend config was edited after the last init metadata write.
+    if [[ -f "$backend_file" && "$backend_file" -nt "$init_state_file" ]]; then
+        return 1
+    fi
+
+    return 0
+}
+
+# ========================================
+# Backend Bootstrap Functions
+# ========================================
+run_backend_init_command() {
+    local bootstrap_dir="modules/bootstrap"
+    local dev_env="dev"
+    local -a dev_prereq_services=("networking" "ecr")
+    local service
+    local confirm
+
+    if [[ $# -gt 0 ]]; then
+        echo -e "${RED}ERROR: Command does not take arguments${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy be-init${NC}"
+        return 1
+    fi
+
+    if [[ ! -d "$bootstrap_dir" ]]; then
+        echo -e "${RED}ERROR: Bootstrap directory not found: $bootstrap_dir${NC}"
+        return 1
+    fi
+
+    validate_environment "$dev_env" || return 1
+    for service in "${dev_prereq_services[@]}"; do
+        validate_service "$dev_env" "$service" || return 1
+    done
+
+    echo -e "${BLUE}Initializing backend via bootstrap stack...${NC}"
+
+    print_terraform_command "terraform -chdir=$bootstrap_dir init"
+    terraform -chdir="$bootstrap_dir" init
+
+    print_terraform_command "terraform -chdir=$bootstrap_dir validate"
+    terraform -chdir="$bootstrap_dir" validate
+
+    print_terraform_command "terraform -chdir=$bootstrap_dir plan"
+    terraform -chdir="$bootstrap_dir" plan
+
+    print_terraform_command "terraform -chdir=$bootstrap_dir apply"
+    terraform -chdir="$bootstrap_dir" apply
+
+    echo -e "${YELLOW}Deploy these prerequisite services first:${NC}"
+    for service in "${dev_prereq_services[@]}"; do
+        echo "  ./an-deploy dev $service"
+    done
+
+    read -r -p "Run these DEV prerequisite deploys now? (y/n): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}Skipped DEV prerequisite deploys.${NC}"
+        echo -e "${YELLOW}Run the commands above before ./an-deploy dev-plan eks${NC}"
+        echo -e "${GREEN}====== Backend init completed via ${bootstrap_dir}${NC}"
+        return 0
+    fi
+
+    echo -e "${BLUE}Deploying DEV prerequisite services...${NC}"
+    echo -e "${YELLOW}Order:${NC} ${dev_prereq_services[*]}"
+    for service in "${dev_prereq_services[@]}"; do
+        run_service_plan "$dev_env" "$service"
+        run_service_apply "$dev_env" "$service"
+    done
+
+    echo -e "${GREEN}====== Backend init + DEV prerequisites completed!${NC}"
+}
+
+get_env_state_bucket() {
+    local env="$1"
+    local services=()
+    local service
+    local bucket=""
+
+    get_services "$env" services
+    for service in "${services[@]}"; do
+        bucket="$(get_backend_config_value "$env" "$service" "bucket" || true)"
+        if [[ -n "$bucket" ]]; then
+            echo "$bucket"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+bucket_has_any_versions_or_markers() {
+    local bucket="$1"
+    local versions
+    local markers
+
+    versions="$(aws s3api list-object-versions --bucket "$bucket" --max-items 1 --query 'length(Versions)' --output text 2>/dev/null || echo "0")"
+    markers="$(aws s3api list-object-versions --bucket "$bucket" --max-items 1 --query 'length(DeleteMarkers)' --output text 2>/dev/null || echo "0")"
+
+    [[ "$versions" != "0" && "$versions" != "None" ]] && return 0
+    [[ "$markers" != "0" && "$markers" != "None" ]] && return 0
+    return 1
+}
+
+delete_bucket_prefix_versions() {
+    local bucket="$1"
+    local prefix="$2"
+    local key
+    local version
+    local folder
+    local deleted_any
+    local loop_count=0
+    local batch_versions=0
+    local batch_markers=0
+    local total_versions=0
+    local total_markers=0
+    local -A seen_folders=()
+
+    echo -e "${BLUE}Scanning prefix:${NC} s3://${bucket}/${prefix}"
+
+    while true; do
+        deleted_any=0
+        batch_versions=0
+        batch_markers=0
+
+        while read -r key version; do
+            [[ -z "${key:-}" || -z "${version:-}" ]] && continue
+            [[ "$key" == "None" || "$version" == "None" ]] && continue
+
+            folder="${key%/*}"
+            if [[ -n "$folder" && -z "${seen_folders[$folder]+x}" ]]; then
+                echo -e "${CYAN}Deleting folder:${NC} ${folder}/"
+                seen_folders["$folder"]=1
+            fi
+
+            aws s3api delete-object --bucket "$bucket" --key "$key" --version-id "$version" >/dev/null
+            deleted_any=1
+            ((batch_versions++))
+            ((total_versions++))
+        done < <(aws s3api list-object-versions --bucket "$bucket" --prefix "$prefix" --query 'Versions[].[Key,VersionId]' --output text 2>/dev/null || true)
+
+        while read -r key version; do
+            [[ -z "${key:-}" || -z "${version:-}" ]] && continue
+            [[ "$key" == "None" || "$version" == "None" ]] && continue
+
+            folder="${key%/*}"
+            if [[ -n "$folder" && -z "${seen_folders[$folder]+x}" ]]; then
+                echo -e "${CYAN}Deleting folder:${NC} ${folder}/"
+                seen_folders["$folder"]=1
+            fi
+
+            aws s3api delete-object --bucket "$bucket" --key "$key" --version-id "$version" >/dev/null
+            deleted_any=1
+            ((batch_markers++))
+            ((total_markers++))
+        done < <(aws s3api list-object-versions --bucket "$bucket" --prefix "$prefix" --query 'DeleteMarkers[].[Key,VersionId]' --output text 2>/dev/null || true)
+
+        ((loop_count++))
+        if [[ $deleted_any -eq 0 ]]; then
+            break
+        fi
+
+        echo -e "${BLUE}Progress:${NC} pass=${loop_count} deleted_versions=${total_versions} deleted_markers=${total_markers}"
+
+        if [[ $loop_count -gt 10000 ]]; then
+            echo -e "${RED}ERROR: Safety stop while deleting versioned objects under s3://${bucket}/${prefix}${NC}"
+            return 1
+        fi
+    done
+
+    echo -e "${GREEN}Delete summary:${NC} versions=${total_versions}, delete_markers=${total_markers}"
+    return 0
+}
+
+run_env_bootstrap_destroy_command() {
+    local env="$1"
+    shift || true
+
+    local env_name
+    local bootstrap_dir="modules/bootstrap"
+    local bucket
+    local prefix
+    local confirm
+    local destroy_bucket
+
+    env_name="$(env_upper "$env")"
+
+    if [[ $# -gt 0 ]]; then
+        echo -e "${RED}ERROR: Command does not take arguments${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy ${env}-destroy bootstrap${NC}"
+        return 1
+    fi
+
+    validate_environment "$env" || return 1
+
+    bucket="$(get_env_state_bucket "$env" || true)"
+    if [[ -z "$bucket" ]]; then
+        echo -e "${RED}ERROR: Unable to detect backend bucket for env '$env'${NC}"
+        return 1
+    fi
+
+    prefix="${env}/services/"
+
+    echo -e "${RED}This removes all versioned Terraform state objects for ${env_name} under:${NC}"
+    echo -e "  ${CYAN}s3://${bucket}/${prefix}${NC}"
+    echo -e "${YELLOW}Recommended first:${NC} ./an-deploy ${env}-destroy all"
+    echo -en "Type '${RED}DELETE ${env_name} BOOTSTRAP${NC}' to confirm: "
+    read -r confirm
+    if [[ "$confirm" != "DELETE ${env_name} BOOTSTRAP" ]]; then
+        echo -e "${YELLOW}Operation cancelled${NC}"
+        return 1
+    fi
+
+    echo -e "${BLUE}Deleting versioned backend objects for ${CYAN}${env}${NC}..."
+    delete_bucket_prefix_versions "$bucket" "$prefix" || return 1
+    echo -e "${GREEN}Removed backend state objects under s3://${bucket}/${prefix}${NC}"
+
+    if bucket_has_any_versions_or_markers "$bucket"; then
+        echo -e "${YELLOW}Shared backend bucket still contains data for other environments.${NC}"
+        echo -e "${YELLOW}Skipped shared bootstrap bucket destroy.${NC}"
+        return 0
+    fi
+
+    echo -e "${YELLOW}Bucket ${bucket} is now empty across all envs.${NC}"
+    read -r -p "Delete this bucket now? (y/n): " destroy_bucket
+    if [[ ! "$destroy_bucket" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}Skipped shared bootstrap stack destroy.${NC}"
+        return 0
+    fi
+
+    if [[ ! -d "$bootstrap_dir" ]]; then
+        echo -e "${RED}ERROR: Bootstrap directory not found: $bootstrap_dir${NC}"
+        return 1
+    fi
+
+    print_terraform_command "terraform -chdir=$bootstrap_dir init"
+    terraform -chdir="$bootstrap_dir" init
+
+    print_terraform_command "terraform -chdir=$bootstrap_dir validate"
+    terraform -chdir="$bootstrap_dir" validate
+
+    print_terraform_command "terraform -chdir=$bootstrap_dir destroy -var-file=terraform.tfvars"
+    terraform -chdir="$bootstrap_dir" destroy -var-file=terraform.tfvars
+
+    echo -e "${GREEN}====== Shared bootstrap stack destroyed${NC}"
+}
+
+
+# ========================================
+# Discovery Functions
+# ========================================
+get_services() {
+    local env="$1"
+    local out_name="$2"
+    local -n out_ref="$out_name"
+    local services_root="envs/$env/services"
+
+    out_ref=()
+
+    [[ -d "$services_root" ]] || return 0
+
+    while IFS= read -r service; do
+        out_ref+=("$service")
+    done < <(find "$services_root" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+}
+
+get_union_services() {
+    local out_name="$1"
+    local -n out_ref="$out_name"
+    local env
+    local services=()
+    local service
+
+    out_ref=()
+
+    for env in "${ENVIRONMENTS[@]}"; do
+        get_services "$env" services
+        for service in "${services[@]}"; do
+            if ! array_contains "$service" "${out_ref[@]}"; then
+                out_ref+=("$service")
+            fi
+        done
+    done
+
+    if [[ ${#out_ref[@]} -gt 0 ]]; then
+        mapfile -t out_ref < <(printf '%s\n' "${out_ref[@]}" | sort)
+    fi
+}
+
+# ========================================
+# Validation Functions
+# ========================================
+validate_environment() {
+    local env="$1"
+    local env_dir="envs/$env/services"
+
+    if [[ ! -d "$env_dir" ]]; then
+        echo -e "${RED}ERROR: Environment directory not found: $env_dir${NC}"
+        return 1
+    fi
+
+    return 0
+}
+
+validate_service() {
+    local env="$1"
+    local service="$2"
+    local dir
+    dir="$(service_dir "$env" "$service")"
+
+    if [[ ! -d "$dir" ]]; then
+        local services
+        get_services "$env" services
+        echo -e "${RED}ERROR: Service '$service' not found in env '$env'${NC}"
+        if [[ ${#services[@]} -gt 0 ]]; then
+            echo -e "${YELLOW}Available services in $(env_upper "$env"): ${CYAN}$(join_by ' ' "${services[@]}")${NC}"
+        fi
+        return 1
+    fi
+
+    return 0
+}
+
+validate_prerequisites() {
+    command -v terraform >/dev/null 2>&1 || {
+        echo -e "${RED}ERROR: Terraform not installed${NC}"
+        return 1
+    }
+
+    command -v aws >/dev/null 2>&1 || {
+        echo -e "${RED}ERROR: AWS CLI not installed${NC}"
+        return 1
+    }
+
+    aws configure list >/dev/null 2>&1 || {
+        echo -e "${RED}ERROR: AWS credentials not configured${NC}"
+        return 1
+    }
+
+    local cache_file="$HOME/.aws/credentials_cache"
+    if [[ -f "$cache_file" ]] && [[ -z "$(find "$cache_file" -mmin +60 2>/dev/null)" ]]; then
+        return 0
+    fi
+
+    aws sts get-caller-identity >/dev/null 2>&1 || {
+        echo -e "${RED}ERROR: AWS credentials are invalid or expired${NC}"
+        return 1
+    }
+
+    touch "$cache_file"
+    return 0
+}
+
+validate_multi_service_args() {
+    local env="$1"
+    local command_usage="$2"
+    local max_services="$3"
+    local out_name="$4"
+    shift 4
+
+    local -n out_ref="$out_name"
+    local service
+
+    out_ref=()
+
+    for service in "$@"; do
+        [[ -n "$service" ]] && out_ref+=("$service")
+    done
+
+    if [[ ${#out_ref[@]} -eq 0 ]]; then
+        echo -e "${RED}ERROR: At least one service is required${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy $command_usage <service1> [service2]${NC}"
+        return 1
+    fi
+
+    if [[ ${#out_ref[@]} -gt $max_services ]]; then
+        echo -e "${RED}ERROR: Maximum $max_services services allowed per operation${NC}"
+        echo -e "${YELLOW}Requested services: ${out_ref[*]}${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy $command_usage <service1> [service2]${NC}"
+        return 1
+    fi
+
+    for service in "${out_ref[@]}"; do
+        validate_service "$env" "$service" || return 1
+    done
+
+    return 0
+}
+
+# ========================================
+# No-Arguments Validation
+# ========================================
+validate_no_args() {
+    local command_usage="$1"
+    shift
+    if [[ $# -gt 0 ]]; then
+        echo -e "${RED}ERROR: Command does not take arguments${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy ${command_usage}${NC}"
+        return 1
+    fi
+    return 0
+}
+
+# ========================================
+# Dependency Resolution Functions
+# ========================================
+detect_remote_state_refs() {
+    local env="$1"
+    local service="$2"
+    local dir
+    local pattern
+
+    dir="$(service_dir "$env" "$service")"
+    pattern="[A-Za-z0-9_-]+/services/[A-Za-z0-9_-]+/terraform.tfstate"
+
+    grep -RhoE "$pattern" "$dir" --include='*.tf' --exclude='backend.tf' 2>/dev/null \
+        | sed -E 's#([A-Za-z0-9_-]+)/services/([^/]+)/terraform.tfstate#\1/\2#' \
+        | grep -v "^${env}/${service}$" \
+        | sort -u || true
+}
+
+detect_service_dependencies() {
+    local env="$1"
+    local service="$2"
+    local refs=()
+    local ref
+    local ref_env
+    local ref_service
+
+    mapfile -t refs < <(detect_remote_state_refs "$env" "$service")
+
+    for ref in "${refs[@]}"; do
+        ref_env="${ref%%/*}"
+        ref_service="${ref#*/}"
+        if [[ "$ref_env" == "$env" && "$ref_service" != "$service" ]]; then
+            echo "$ref_service"
+        fi
+    done | sort -u
+}
+
+backend_tf_path() {
+    local env="$1"
+    local service="$2"
+    echo "$(service_dir "$env" "$service")/backend.tf"
+}
+
+get_backend_config_value() {
+    local env="$1"
+    local service="$2"
+    local key_name="$3"
+    local backend_file
+
+    backend_file="$(backend_tf_path "$env" "$service")"
+    [[ -f "$backend_file" ]] || return 1
+
+    awk -F'"' -v key="$key_name" '$0 ~ key"[[:space:]]*=" { print $2; exit }' "$backend_file"
+}
+
+service_state_exists() {
+    local env="$1"
+    local service="$2"
+    local bucket
+    local key
+
+    bucket="$(get_backend_config_value "$env" "$service" "bucket")"
+    key="$(get_backend_config_value "$env" "$service" "key")"
+
+    [[ -n "$bucket" && -n "$key" ]] || return 1
+    aws s3api head-object --bucket "$bucket" --key "$key" >/dev/null 2>&1
+}
+
+check_remote_state_dependencies() {
+    local env="$1"
+    local service="$2"
+    local refs=()
+    local ref
+    local ref_env
+    local ref_service
+    local bucket
+    local key
+    local -a missing_refs=()
+    local -a same_env_missing=()
+    local -a same_env_order=()
+    local -a cross_env_missing=()
+    local item
+
+    mapfile -t refs < <(detect_remote_state_refs "$env" "$service")
+    [[ ${#refs[@]} -gt 0 ]] || return 0
+
+    for ref in "${refs[@]}"; do
+        ref_env="${ref%%/*}"
+        ref_service="${ref#*/}"
+
+        if service_state_exists "$ref_env" "$ref_service"; then
+            continue
+        fi
+
+        bucket="$(get_backend_config_value "$ref_env" "$ref_service" "bucket" || true)"
+        key="$(get_backend_config_value "$ref_env" "$ref_service" "key" || true)"
+
+        if [[ -n "$bucket" && -n "$key" ]]; then
+            missing_refs+=("${ref} -> s3://${bucket}/${key}")
+        else
+            missing_refs+=("${ref} -> missing backend.tf or backend bucket/key")
+        fi
+
+        if [[ "$ref_env" == "$env" ]]; then
+            if ! array_contains "$ref_service" "${same_env_missing[@]}"; then
+                same_env_missing+=("$ref_service")
+            fi
+        else
+            if ! array_contains "$ref" "${cross_env_missing[@]}"; then
+                cross_env_missing+=("$ref")
+            fi
+        fi
+    done
+
+    if [[ ${#missing_refs[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    echo -e "${RED}ERROR: Missing remote state required by ${env}/${service}${NC}"
+    for item in "${missing_refs[@]}"; do
+        echo -e "  - ${YELLOW}${item}${NC}"
+    done
+
+    if [[ ${#same_env_missing[@]} -gt 0 ]]; then
+        resolve_service_order "$env" same_env_order "${same_env_missing[@]}"
+        echo -e "${YELLOW}Deploy these prerequisite services first:${NC}"
+        for item in "${same_env_order[@]}"; do
+            echo -e "  ./an-deploy ${env} ${item}"
+        done
+    fi
+
+    if [[ ${#cross_env_missing[@]} -gt 0 ]]; then
+        echo -e "${YELLOW}Missing cross-environment prerequisite states:${NC}"
+        for item in "${cross_env_missing[@]}"; do
+            echo -e "  ./an-deploy ${item%%/*} ${item#*/}"
+        done
+    fi
+
+    return 1
+}
+
+resolve_service_order() {
+    local env="$1"
+    local out_name="$2"
+    shift 2
+
+    local -n out_ref="$out_name"
+    local -a targets=("$@")
+    local -a remaining=("$@")
+    local -a resolved_order=()
+    local -a next_remaining=()
+    local -a deps=()
+    local -a sorted_remaining=()
+    local service
+    local dep
+    local ready
+    local progressed
+
+    out_ref=()
+
+    while [[ ${#remaining[@]} -gt 0 ]]; do
+        progressed=0
+        next_remaining=()
+
+        for service in "${remaining[@]}"; do
+            mapfile -t deps < <(detect_service_dependencies "$env" "$service")
+            ready=1
+
+            for dep in "${deps[@]}"; do
+                if array_contains "$dep" "${targets[@]}" && ! array_contains "$dep" "${resolved_order[@]}"; then
+                    ready=0
+                    break
+                fi
+            done
+
+            if [[ $ready -eq 1 ]]; then
+                resolved_order+=("$service")
+                progressed=1
+            else
+                next_remaining+=("$service")
+            fi
+        done
+
+        if [[ $progressed -eq 0 ]]; then
+            echo -e "${YELLOW}WARNING: Could not fully infer dependency order. Falling back to alphabetical for:${NC} ${next_remaining[*]}"
+            mapfile -t sorted_remaining < <(printf '%s\n' "${next_remaining[@]}" | sort)
+            resolved_order+=("${sorted_remaining[@]}")
+            break
+        fi
+
+        remaining=("${next_remaining[@]}")
+    done
+
+    out_ref=("${resolved_order[@]}")
+}
+
+expand_deploy_targets() {
+    local env="$1"
+    local out_name="$2"
+    shift 2
+
+    local -n out_ref="$out_name"
+    local -a original=("${out_ref[@]}")
+    local service
+
+    out_ref=()
+    for service in "${original[@]}"; do
+        if [[ "$env" == "dev" && "$service" == "eks" ]]; then
+            if ! array_contains "eks" "${out_ref[@]}"; then
+                out_ref+=("eks")
+            fi
+            if [[ -d "$(service_dir "$env" "eks-post")" ]] && ! array_contains "eks-post" "${out_ref[@]}"; then
+                out_ref+=("eks-post")
+            fi
+            continue
+        fi
+
+        if ! array_contains "$service" "${out_ref[@]}"; then
+            out_ref+=("$service")
+        fi
+    done
+}
+
+reverse_services() {
+    local out_name="$1"
+    shift
+
+    local -n out_ref="$out_name"
+    local -a arr=("$@")
+    local i
+
+    out_ref=()
+    for ((i=${#arr[@]}-1; i>=0; i--)); do
+        out_ref+=("${arr[$i]}")
+    done
+}
+
+# ========================================
+# Terraform Service Functions
+# ========================================
+run_service_init() {
+    local env="$1"
+    local service="$2"
+    local dir
+
+    dir="$(service_dir "$env" "$service")"
+
+    if is_terraform_init_current "$dir"; then
+        echo -e "${BLUE}Skipping init for service: ${CYAN}${env}/${service}${NC} ${YELLOW}(already initialized)${NC}"
+        return 0
+    fi
+
+    echo -e "${BLUE}Initializing service: ${CYAN}${env}/${service}${NC}"
+    print_terraform_command "terraform -chdir=$dir init"
+    terraform -chdir="$dir" init
+}
+
+run_service_validate() {
+    local env="$1"
+    local service="$2"
+    local dir
+
+    dir="$(service_dir "$env" "$service")"
+
+    echo -e "${BLUE}Validating service: ${CYAN}${env}/${service}${NC}"
+    print_terraform_command "terraform -chdir=$dir validate"
+    terraform -chdir="$dir" validate
+}
+
+run_service_plan() {
+    local env="$1"
+    local service="$2"
+    local dir
+    local tfplan
+
+    dir="$(service_dir "$env" "$service")"
+    tfplan="$(plan_name "$service")"
+
+    echo -e "${BLUE}Planning service: ${CYAN}${env}/${service}${NC}"
+    check_remote_state_dependencies "$env" "$service" || return 1
+    run_service_init "$env" "$service"
+
+    if [[ -f "$dir/terraform.tfvars" ]]; then
+        print_terraform_command "terraform -chdir=$dir plan -var-file=terraform.tfvars -out=$tfplan"
+        terraform -chdir="$dir" plan -var-file=terraform.tfvars -out="$tfplan"
+    else
+        print_terraform_command "terraform -chdir=$dir plan -out=$tfplan"
+        terraform -chdir="$dir" plan -out="$tfplan"
+    fi
+
+    echo -e "${GREEN}Plan saved to: $(plan_path "$env" "$service")${NC}"
+}
+
+run_service_apply() {
+    local env="$1"
+    local service="$2"
+    local dir
+    local tfplan
+    local plan_file
+
+    dir="$(service_dir "$env" "$service")"
+    tfplan="$(plan_name "$service")"
+    plan_file="$(plan_path "$env" "$service")"
+
+    if [[ ! -f "$plan_file" ]]; then
+        echo -e "${RED}ERROR: Plan file not found: $plan_file${NC}"
+        echo -e "${YELLOW}Run: ./an-deploy ${env}-plan $service${NC}"
+        return 1
+    fi
+
+    echo -e "${BLUE}Applying service: ${CYAN}${env}/${service}${NC}"
+    print_terraform_command "terraform -chdir=$dir apply $tfplan"
+    terraform -chdir="$dir" apply "$tfplan"
+}
+
+run_service_destroy() {
+    local env="$1"
+    local service="$2"
+    local dir
+    local -a destroy_args=("-auto-approve")
+    local cmd
+
+    dir="$(service_dir "$env" "$service")"
+
+    echo -e "${RED}Destroying service: ${CYAN}${env}/${service}${NC}"
+    run_service_init "$env" "$service"
+
+    if [[ -f "$dir/terraform.tfvars" ]]; then
+        destroy_args+=("-var-file=terraform.tfvars")
+    fi
+
+    cmd="terraform -chdir=$dir destroy ${destroy_args[*]}"
+    print_terraform_command "$cmd"
+    terraform -chdir="$dir" destroy "${destroy_args[@]}"
+}
+
+run_service_show_plan() {
+    local env="$1"
+    local service="$2"
+    local dir
+    local tfplan
+    local plan_file
+
+    dir="$(service_dir "$env" "$service")"
+    tfplan="$(plan_name "$service")"
+    plan_file="$(plan_path "$env" "$service")"
+
+    if [[ ! -f "$plan_file" ]]; then
+        echo -e "${RED}ERROR: Plan file not found: $plan_file${NC}"
+        echo -e "${YELLOW}Run: ./an-deploy ${env}-plan $service${NC}"
+        return 1
+    fi
+
+    echo -e "${BLUE}Showing plan for service: ${CYAN}${env}/${service}${NC}"
+    print_terraform_command "terraform -chdir=$dir show $tfplan"
+    terraform -chdir="$dir" show "$tfplan"
+}
+
+# ========================================
+# Command Orchestration Functions
+# ========================================
+collect_env_targets() {
+    local env="$1"
+    local command_usage="$2"
+    local out_name="$3"
+    shift 3
+
+    local -n out_ref="$out_name"
+    local selected=()
+    local all_services=()
+    local arg
+
+    out_ref=()
+
+    get_services "$env" all_services
+    if [[ ${#all_services[@]} -eq 0 ]]; then
+        echo -e "${RED}ERROR: No services found for env '$env'${NC}"
+        return 1
+    fi
+
+    if [[ $# -eq 0 ]]; then
+        out_ref=("${all_services[@]}")
+        return 0
+    fi
+
+    if [[ $# -gt 1 ]]; then
+        for arg in "$@"; do
+            if [[ "$arg" == "all" || "$arg" == "ALL" || "$arg" == "*" ]]; then
+                echo -e "${RED}ERROR: 'all' selector must be used alone${NC}"
+                echo -e "${YELLOW}Usage: ./an-deploy $command_usage [service|all]${NC}"
+                return 1
+            fi
+        done
+        echo -e "${RED}ERROR: Command supports only one service or 'all'${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy $command_usage [service|all]${NC}"
+        return 1
+    fi
+
+    arg="$1"
+    if [[ "$arg" == "all" || "$arg" == "ALL" || "$arg" == "*" ]]; then
+        out_ref=("${all_services[@]}")
+        return 0
+    fi
+
+    validate_service "$env" "$arg" || return 1
+    out_ref=("$arg")
+    return 0
+}
+
+run_validate_command() {
+    local env="$1"
+    shift
+    local targets=()
+    local ordered=()
+    local env_name
+
+    env_name="$(env_upper "$env")"
+    collect_env_targets "$env" "${env}-validate" targets "$@" || return 1
+    resolve_service_order "$env" ordered "${targets[@]}"
+
+    echo -e "${BLUE}Validating ${env_name} services...${NC}"
+    echo -e "${YELLOW}Order:${NC} ${ordered[*]}"
+
+    for service in "${ordered[@]}"; do
+        run_service_validate "$env" "$service"
+    done
+
+    echo -e "${GREEN}====== ${env_name} validation completed!${NC}"
+}
+
+run_init_command() {
+    local env="$1"
+    shift
+    local services=()
+    local all_services=()
+    local ordered=()
+    local env_name
+    local service
+    local arg
+
+    env_name="$(env_upper "$env")"
+
+    get_services "$env" all_services
+    if [[ ${#all_services[@]} -eq 0 ]]; then
+        echo -e "${RED}ERROR: No services found for env '$env'${NC}"
+        return 1
+    fi
+
+    if [[ $# -eq 0 ]]; then
+        echo -e "${RED}ERROR: At least one service is required${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy ${env}-init <service1> [service2] | all${NC}"
+        return 1
+    fi
+
+    for arg in "$@"; do
+        if [[ "$arg" == "all" || "$arg" == "ALL" || "$arg" == "*" ]]; then
+            if [[ $# -gt 1 ]]; then
+                echo -e "${RED}ERROR: 'all' selector must be used alone${NC}"
+                echo -e "${YELLOW}Usage: ./an-deploy ${env}-init <service1> [service2] | all${NC}"
+                return 1
+            fi
+            services=("${all_services[@]}")
+            resolve_service_order "$env" ordered "${services[@]}"
+
+            echo -e "${BLUE}Initializing all ${env_name} services...${NC}"
+            echo -e "${YELLOW}Order:${NC} ${ordered[*]}"
+
+            for service in "${ordered[@]}"; do
+                run_service_init "$env" "$service"
+            done
+
+            echo -e "${GREEN}====== ${env_name} init completed!${NC}"
+            return 0
+        fi
+    done
+
+    validate_multi_service_args "$env" "${env}-init" "$MAX_MULTI_SERVICE" services "$@" || return 1
+    resolve_service_order "$env" ordered "${services[@]}"
+
+    echo -e "${BLUE}Initializing ${env_name} services...${NC}"
+    echo -e "${YELLOW}Services:${NC} ${services[*]}"
+    echo -e "${YELLOW}Order:${NC} ${ordered[*]}"
+
+    for service in "${ordered[@]}"; do
+        run_service_init "$env" "$service"
+    done
+
+    echo -e "${GREEN}====== ${env_name} init completed!${NC}"
+}
+
+run_plan_command() {
+    local env="$1"
+    shift
+    local targets=()
+    local ordered=()
+    local env_name
+
+    env_name="$(env_upper "$env")"
+    collect_env_targets "$env" "${env}-plan" targets "$@" || return 1
+    resolve_service_order "$env" ordered "${targets[@]}"
+    expand_deploy_targets "$env" ordered "${ordered[@]}"
+
+    echo -e "${BLUE}Planning ${env_name} services...${NC}"
+    echo -e "${YELLOW}Order:${NC} ${ordered[*]}"
+
+    for service in "${ordered[@]}"; do
+        run_service_plan "$env" "$service"
+    done
+
+    echo -e "${GREEN}====== ${env_name} planning completed!${NC}"
+}
+
+run_apply_command() {
+    local env="$1"
+    shift
+    local targets=()
+    local ordered=()
+    local env_name
+    local service
+
+    env_name="$(env_upper "$env")"
+    collect_env_targets "$env" "${env}-apply" targets "$@" || return 1
+    resolve_service_order "$env" ordered "${targets[@]}"
+    expand_deploy_targets "$env" ordered "${ordered[@]}"
+
+    for service in "${ordered[@]}"; do
+        [[ -f "$(plan_path "$env" "$service")" ]] || {
+            echo -e "${RED}ERROR: Missing plan for ${env}/${service}${NC}"
+            echo -e "${YELLOW}Run: ./an-deploy ${env}-plan $service${NC}"
+            return 1
+        }
+    done
+
+    echo -e "${BLUE}Applying ${env_name} services...${NC}"
+    echo -e "${YELLOW}Order:${NC} ${ordered[*]}"
+
+    read -r -p "Apply planned changes for ${env_name}? (y/n): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}Operation cancelled${NC}"
+        return 1
+    fi
+
+    for service in "${ordered[@]}"; do
+        run_service_apply "$env" "$service"
+    done
+
+    echo -e "${GREEN}====== ${env_name} apply completed!${NC}"
+}
+
+run_deploy_command() {
+    local env="$1"
+    shift
+    local services=()
+    local all_services=()
+    local ordered=()
+    local env_name
+    local service
+    local arg
+
+    env_name="$(env_upper "$env")"
+
+    get_services "$env" all_services
+    if [[ ${#all_services[@]} -eq 0 ]]; then
+        echo -e "${RED}ERROR: No services found for env '$env'${NC}"
+        return 1
+    fi
+
+    if [[ $# -eq 0 ]]; then
+        echo -e "${RED}ERROR: At least one service is required${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy ${env} <service1> [service2] | all${NC}"
+        return 1
+    fi
+
+    for arg in "$@"; do
+        if [[ "$arg" == "all" || "$arg" == "ALL" || "$arg" == "*" ]]; then
+            if [[ $# -gt 1 ]]; then
+                echo -e "${RED}ERROR: 'all' selector must be used alone${NC}"
+                echo -e "${YELLOW}Usage: ./an-deploy ${env} <service1> [service2] | all${NC}"
+                return 1
+            fi
+            services=("${all_services[@]}")
+            resolve_service_order "$env" ordered "${services[@]}"
+            expand_deploy_targets "$env" ordered "${ordered[@]}"
+
+            echo -e "${BLUE}Deploying all ${env_name} services...${NC}"
+            echo -e "${YELLOW}Order:${NC} ${ordered[*]}"
+
+            read -r -p "Run plan + apply sequentially for all ${env_name} services? (y/n): " confirm
+            if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+                echo -e "${YELLOW}Operation cancelled${NC}"
+                return 1
+            fi
+
+            for service in "${ordered[@]}"; do
+                run_service_plan "$env" "$service"
+                run_service_apply "$env" "$service"
+            done
+
+            echo -e "${GREEN}====== ${env_name} deploy completed!${NC}"
+            return 0
+        fi
+    done
+
+    validate_multi_service_args "$env" "${env}" "$MAX_MULTI_SERVICE" services "$@" || return 1
+    resolve_service_order "$env" ordered "${services[@]}"
+    expand_deploy_targets "$env" ordered "${ordered[@]}"
+
+    echo -e "${BLUE}Deploying ${env_name} services...${NC}"
+    echo -e "${YELLOW}Services:${NC} ${services[*]}"
+    echo -e "${YELLOW}Order:${NC} ${ordered[*]}"
+
+    read -r -p "Run plan + apply sequentially for selected ${env_name} services? (y/n): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}Operation cancelled${NC}"
+        return 1
+    fi
+
+    for service in "${ordered[@]}"; do
+        run_service_plan "$env" "$service"
+        run_service_apply "$env" "$service"
+    done
+
+    echo -e "${GREEN}====== ${env_name} deploy completed!${NC}"
+}
+
+run_destroy_command() {
+    local env="$1"
+    shift
+    local services=()
+    local all_services=()
+    local ordered=()
+    local destroy_order=()
+    local env_name
+    local service
+    local has_failure=0
+    local arg
+
+    env_name="$(env_upper "$env")"
+
+    get_services "$env" all_services
+    if [[ ${#all_services[@]} -eq 0 ]]; then
+        echo -e "${RED}ERROR: No services found for env '$env'${NC}"
+        return 1
+    fi
+
+    if [[ $# -eq 0 ]]; then
+        echo -e "${RED}ERROR: At least one service is required${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy ${env}-destroy <service1> [service2] | all | bootstrap${NC}"
+        return 1
+    fi
+
+    for arg in "$@"; do
+        if [[ "$arg" == "bootstrap" ]]; then
+            if [[ $# -gt 1 ]]; then
+                echo -e "${RED}ERROR: 'bootstrap' selector must be used alone${NC}"
+                echo -e "${YELLOW}Usage: ./an-deploy ${env}-destroy <service1> [service2] | all | bootstrap${NC}"
+                return 1
+            fi
+
+            run_env_bootstrap_destroy_command "$env"
+            return $?
+        fi
+
+        if [[ "$arg" == "all" || "$arg" == "ALL" || "$arg" == "*" ]]; then
+            if [[ $# -gt 1 ]]; then
+                echo -e "${RED}ERROR: 'all' selector must be used alone${NC}"
+                echo -e "${YELLOW}Usage: ./an-deploy ${env}-destroy <service1> [service2] | all | bootstrap${NC}"
+                return 1
+            fi
+
+            services=("${all_services[@]}")
+            resolve_service_order "$env" ordered "${services[@]}"
+            reverse_services destroy_order "${ordered[@]}"
+
+            echo -e "${RED}Destroying all ${env_name} services...${NC}"
+            echo -e "${YELLOW}Destroy order:${NC} ${destroy_order[*]}"
+
+            echo -en "Type '${RED}DESTROY ALL${NC}' to ${RED}confirm${NC}: "
+            read -r confirm
+            if [[ "$confirm" != "DESTROY ALL" ]]; then
+                echo -e "${YELLOW}Operation cancelled${NC}"
+                return 1
+            fi
+
+            for service in "${destroy_order[@]}"; do
+                if ! run_service_destroy "$env" "$service"; then
+                    has_failure=1
+                    echo -e "${RED}Failed to destroy service: ${env}/${service}${NC}"
+                fi
+            done
+
+            if [[ $has_failure -eq 1 ]]; then
+                echo -e "${RED}------ ${env_name} destroy completed with errors${NC}"
+                return 1
+            fi
+
+            echo -en "Clean up bootstrap backend state for ${env_name}? (y/n): "
+            read -r cleanup_bootstrap
+            if [[ "$cleanup_bootstrap" == "y" || "$cleanup_bootstrap" == "Y" ]]; then
+                run_env_bootstrap_destroy_command "$env" || return $?
+            fi
+
+            echo -e "${GREEN}====== ${env_name} destroy completed!${NC}"
+            return 0
+        fi
+    done
+
+    validate_multi_service_args "$env" "${env}-destroy" "$MAX_MULTI_SERVICE" services "$@" || return 1
+    resolve_service_order "$env" ordered "${services[@]}"
+    reverse_services destroy_order "${ordered[@]}"
+
+    echo -e "${RED}Destroying ${env_name} services...${NC}"
+    echo -e "${YELLOW}Services:${NC} ${services[*]}"
+    echo -e "${YELLOW}Destroy order:${NC} ${destroy_order[*]}"
+
+    echo -en "Type '${RED}DESTROY${NC}' to confirm: "
+    read -r confirm
+    if [[ "$confirm" != "DESTROY" ]]; then
+        echo -e "${YELLOW}Operation cancelled${NC}"
+        return 1
+    fi
+
+    for service in "${destroy_order[@]}"; do
+        if ! run_service_destroy "$env" "$service"; then
+            has_failure=1
+            echo -e "${RED}Failed to destroy service: ${env}/${service}${NC}"
+        fi
+    done
+
+    if [[ $has_failure -eq 1 ]]; then
+        echo -e "${RED}------ ${env_name} destroy completed with errors${NC}"
+        return 1
+    fi
+
+    echo -e "${GREEN}====== ${env_name} destroy completed!${NC}"
+}
+
+run_show_service_plan_command() {
+    local env="$1"
+    shift
+
+    if [[ $# -ne 1 ]]; then
+        echo -e "${RED}ERROR: Service name required${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy ${env}-svc-plan <service>${NC}"
+        return 1
+    fi
+
+    validate_service "$env" "$1" || return 1
+    run_service_show_plan "$env" "$1"
+}
+
+# ========================================
+# Help Functions
+# ========================================
+print_available_services() {
+    local env
+    local services=()
+
+    echo -e "${YELLOW}Available Services by Environment:${NC}"
+    for env in "${ENVIRONMENTS[@]}"; do
+        get_services "$env" services
+        if [[ ${#services[@]} -gt 0 ]]; then
+            echo -e "  ${GREEN}${env^^}:${NC} ${CYAN}$(join_by ' ' "${services[@]}")${NC}"
+        else
+            echo -e "  ${GREEN}${env^^}:${NC} ${RED}(none)${NC}"
+        fi
+    done
+}
+
+show_help() {
+    echo -e "${BLUE}an-deploy - Terraform Management Script for DEV${NC}"
+    echo ""
+    echo -e "${YELLOW}Usage:${NC}"
+    echo "  ./an-deploy <command> [service|all|bootstrap]"
+    echo ""
+    echo -e "${YELLOW}Bootstrap Commands:${NC}"
+    echo -e "  ${GREEN}be-init${NC} - Bootstrap backend bucket, then deploy DEV prerequisites (networking, ecr)"
+    echo ""
+    echo -e "${YELLOW}Environment Commands:${NC}"
+    echo -e "  ${GREEN}dev-init${NC}     <s1> [s2]|all - Init DEV (all services or one service)"
+    echo -e "  ${GREEN}dev-validate${NC} <s1> [s2]|all - Validate DEV (all services or one service)"
+    echo -e "  ${GREEN}dev-plan${NC}     <s1> [s2]|all - Plan DEV (all services or one service)"
+    echo -e "  ${GREEN}dev-apply${NC}    <s1> [s2]|all - Apply DEV (all services or one service)"
+    echo ""
+    echo -e "${YELLOW}Service Commands (max 2 services for deploy/destroy):${NC}"
+    echo -e "  ${GREEN}dev${NC}          <s1> [s2]|all - Plan + apply selected DEV service(s), or all"
+    echo -e "  ${GREEN}dev-destroy${NC}  - Destroy selected DEV service(s), all, or bootstrap"
+    echo -e "  ${GREEN}dev-svc-plan${NC} <service> - Show saved DEV service plan"
+    echo ""
+    echo -e "${YELLOW}Note:${NC} selecting dev/eks also runs dev/eks-post (post-cluster Kubernetes objects)."
+    echo ""
+    echo -e "${YELLOW}Secret Retrieval:${NC}"
+    echo -e "  ${GREEN}dev-pass${NC} mongodb - Print runtime MongoDB secrets from dev cluster"
+    echo ""
+    echo -e "${YELLOW}Runtime Info Retrieval:${NC}"
+    echo -e "  ${GREEN}dev-get${NC} elb - Print AWS Load Balancer DNS name for dev app ALB"
+    echo ""
+    echo -e "${YELLOW}Help:${NC}"
+    echo -e "  ${GREEN}--help${NC}   - Show global help"
+    echo -e "  ${GREEN}dev-help${NC} - Show DEV environment help"
+    print_available_services
+    echo ""
+    echo -e "${YELLOW}Examples:${NC}"
+    echo "  ./an-deploy be-init"
+    echo "  ./an-deploy dev-destroy bootstrap"
+    echo "  ./an-deploy dev-validate"
+    echo "  ./an-deploy dev-validate all"
+    echo "  ./an-deploy dev-plan eks"
+    echo "  ./an-deploy dev-init networking ecr"
+    echo "  ./an-deploy dev-apply all"
+    echo "  ./an-deploy dev-svc-plan eks"
+    echo "  ./an-deploy dev eks eks-alb"
+    echo "  ./an-deploy dev-destroy all"
+    echo "  ./an-deploy dev-get elb"
+    echo ""
+    echo -e "${YELLOW}Note:${NC} For init/validate/plan/apply/deploy/destroy, ${CYAN}all${NC} must be used alone; ${CYAN}bootstrap${NC} is supported only for dev-destroy and must be used alone."
+}
+
+show_env_help() {
+    local env="$1"
+    local env_name
+    local services=()
+
+    env_name="$(env_upper "$env")"
+    get_services "$env" services
+
+    echo -e "${BLUE}an-deploy - ${env_name} Environment Commands${NC}"
+    echo ""
+    echo -e "${YELLOW}Usage:${NC}"
+    echo "  ./an-deploy <command> [service|all|bootstrap]"
+    echo ""
+    echo -e "${YELLOW}Commands:${NC}"
+    echo -e "  ${GREEN}${env}-init${NC}     <s1> [s2]|all - Init ${env_name} (all services or one service)"
+    echo -e "  ${GREEN}${env}-validate${NC} <s1> [s2]|all - Validate ${env_name} (all services or one service)"
+    echo -e "  ${GREEN}${env}-plan${NC}     <s1> [s2]|all - Plan ${env_name} (all services or one service)"
+    echo -e "  ${GREEN}${env}-apply${NC}    <s1> [s2]|all - Apply ${env_name} (all services or one service)"
+    echo -e "  ${GREEN}${env}${NC} <s1> [s2]|all  - Plan + apply selected service(s), or all"
+    echo -e "  ${GREEN}${env}-destroy${NC} <s1> [s2]|all|bootstrap - Destroy selected service(s), all, or bootstrap"
+    echo -e "  ${GREEN}${env}-svc-plan${NC} <s>           - Show saved service plan"
+    echo -e "  ${GREEN}${env}-pass${NC} mongodb            - Print runtime MongoDB secrets from dev cluster"
+    echo -e "  ${GREEN}${env}-get${NC} elb               - Print AWS Load Balancer DNS name"
+    echo ""
+    echo -e "${YELLOW}Note:${NC} ${CYAN}all${NC} must be used alone for init/validate/plan/apply/deploy/destroy; ${CYAN}bootstrap${NC} is supported only for ${env}-destroy and must be used alone."
+    echo ""
+
+    if [[ ${#services[@]} -gt 0 ]]; then
+        echo -e "${YELLOW}Available ${env_name} services:${NC} ${CYAN}$(join_by ' ' "${services[@]}")${NC}"
+    else
+        echo -e "${RED}No services found for ${env_name}${NC}"
+    fi
+}
+
+show_dev_help() {
+    show_env_help "dev"
+}
+
+# ========================================
+# Dev Pass (Secret Retrieval) Functions
+# ========================================
+fetch_k8s_secret_field() {
+    local label="$1"
+    local secret="$2"
+    local key="$3"
+    local namespace="$4"
+    local encoded
+    local decoded
+
+    encoded="$(kubectl -n "$namespace" get secret "$secret" -o "jsonpath={.data.${key}}" 2>&1)" || {
+        echo -e "${RED}ERROR: Failed to read ${label} or Non-Exist (kubectl error on secret '${secret}')${NC}"
+        return 1
+    }
+
+    if [[ -z "$encoded" ]]; then
+        echo -e "${RED}ERROR: Key '${key}' missing or empty in secret '${secret}'${NC}"
+        return 1
+    fi
+
+    decoded="$(echo "$encoded" | base64 -d 2>&1)" || {
+        echo -e "${RED}ERROR: Failed to decode ${label} (base64 error)${NC}"
+        return 1
+    }
+
+    echo -e "${GREEN}${label}:${NC} ${decoded}"
+}
+
+run_dev_pass_command() {
+    local target="${1:-}"
+    shift || true
+
+    if [[ -z "$target" ]]; then
+        echo -e "${RED}ERROR: Missing required argument${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy dev-pass mongodb${NC}"
+        return 1
+    fi
+
+    if [[ $# -gt 0 ]]; then
+        echo -e "${RED}ERROR: Too many arguments${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy dev-pass mongodb${NC}"
+        return 1
+    fi
+
+    if [[ "$target" != "mongodb" ]]; then
+        echo -e "${RED}ERROR: Unsupported target '${target}'${NC}"
+        echo -e "${YELLOW}Supported: mongodb${NC}"
+        return 1
+    fi
+
+    validate_environment "dev" || return 1
+
+    command -v kubectl >/dev/null 2>&1 || {
+        echo -e "${RED}ERROR: kubectl not installed${NC}"
+        return 1
+    }
+
+    echo -e "${BLUE}Retrieving runtime MongoDB secrets from dev cluster...${NC}"
+    echo ""
+
+    fetch_k8s_secret_field "App Password" "mongo-app-secret" "MONGO_APP_PASSWORD" "dev" || return 1
+    fetch_k8s_secret_field "Root Password" "mongo-root-secret" "MONGO_INITDB_ROOT_PASSWORD" "dev" || return 1
+    fetch_k8s_secret_field "MongoDB URI" "mongo-app-secret" "MONGODB_URI" "dev" || return 1
+}
+
+# ========================================
+# Dev Get (Runtime Info Retrieval) Functions
+# ========================================
+fetch_elb_dns_name() {
+    local region="$1"
+    local load_balancer_name="$2"
+    local dns_name
+
+    command -v aws >/dev/null 2>&1 || {
+        echo -e "${RED}ERROR: aws CLI not installed${NC}" >&2
+        return 1
+    }
+
+    dns_name="$(aws elbv2 describe-load-balancers \
+        --region "$region" \
+        --names "$load_balancer_name" \
+        --query 'LoadBalancers[0].DNSName' \
+        --output text 2>&1)" || {
+        echo -e "${RED}ERROR: Failed to read ELB DNS name for '${load_balancer_name}'${NC}" >&2
+        echo "$dns_name" >&2
+        return 1
+    }
+
+    if [[ -z "$dns_name" || "$dns_name" == "None" ]]; then
+        echo -e "${RED}ERROR: ELB DNS name not found for '${load_balancer_name}'${NC}" >&2
+        return 1
+    fi
+
+    echo -e "${GREEN}DNS Name:${NC} ${dns_name}"
+}
+
+run_dev_get_command() {
+    local target="${1:-}"
+    shift || true
+
+    if [[ -z "$target" ]]; then
+        echo -e "${RED}ERROR: Missing required argument${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy dev-get elb${NC}"
+        return 1
+    fi
+
+    if [[ $# -gt 0 ]]; then
+        echo -e "${RED}ERROR: Too many arguments${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy dev-get elb${NC}"
+        return 1
+    fi
+
+    if [[ "$target" != "elb" ]]; then
+        echo -e "${RED}ERROR: Unsupported target '${target}'${NC}"
+        echo -e "${YELLOW}Supported: elb${NC}"
+        return 1
+    fi
+
+    validate_environment "dev" || return 1
+    fetch_elb_dns_name "us-east-1" "demo-react-eks-dev"
+}
+
+# ========================================
+# Main Execution
+# ========================================
+main() {
+    local command="${1:-}"
+    shift || true
+
+    case "$command" in
+        "be-init")
+            validate_prerequisites || exit 1
+            run_backend_init_command "$@"
+            ;;
+        "dev-init")
+            validate_prerequisites || exit 1
+            validate_environment "dev" || exit 1
+            run_init_command "dev" "$@"
+            ;;
+        "dev-validate")
+            validate_prerequisites || exit 1
+            validate_environment "dev" || exit 1
+            run_validate_command "dev" "$@"
+            ;;
+        "dev-plan")
+            validate_prerequisites || exit 1
+            validate_environment "dev" || exit 1
+            run_plan_command "dev" "$@"
+            ;;
+        "dev-apply")
+            validate_prerequisites || exit 1
+            validate_environment "dev" || exit 1
+            run_apply_command "dev" "$@"
+            ;;
+        "dev")
+            validate_prerequisites || exit 1
+            validate_environment "dev" || exit 1
+            run_deploy_command "dev" "$@"
+            ;;
+        "dev-destroy")
+            validate_prerequisites || exit 1
+            validate_environment "dev" || exit 1
+            run_destroy_command "dev" "$@"
+            ;;
+        "dev-svc-plan")
+            validate_prerequisites || exit 1
+            validate_environment "dev" || exit 1
+            run_show_service_plan_command "dev" "$@"
+            ;;
+        "dev-pass")
+            run_dev_pass_command "$@"
+            ;;
+        "dev-get")
+            run_dev_get_command "$@"
+            ;;
+
+        "--help"|"")
+            validate_no_args "--help" "$@" || exit 1
+            show_help
+            ;;
+        "-h")
+            validate_no_args "-h" "$@" || exit 1
+            show_dev_help
+            ;;
+        "dev-help")
+            validate_no_args "dev-help" "$@" || exit 1
+            show_dev_help
+            ;;
+
+        *)
+            echo -e "${RED}ERROR: Unknown command: $command${NC}"
+            echo ""
+            show_help
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
