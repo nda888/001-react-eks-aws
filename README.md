@@ -1,4 +1,6 @@
-Terraform-managed AWS EKS demo for a React, Express, and MongoDB app. Includes Docker Compose configuration, ECR image build scripts, Kubernetes manifests, ALB ingress, SSM-backed secrets, and observability stack.
+React, Express, MongoDB are deployed to AWS EKS with Terraform, ECR, ALB, SSM secrets, and Grafana observability.
+
+![React Note App](img/react.png)
 
 ## Stack
 
