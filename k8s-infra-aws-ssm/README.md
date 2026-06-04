@@ -82,10 +82,6 @@ demo-react-eks.h0m3.xyz CNAME <ALB DNS hostname>
 - **Loki** — stores pod logs.
 - **Grafana Alloy** — tails logs from `/var/log/pods` in `dev` namespace.
 
-### Dashboard screenshots
-
-Grafana dashboards cover cluster workload health and MongoDB storage capacity.
-
 | Dashboard | Purpose | Screenshot |
 |-----------|---------|------------|
 | CPU usage | Tracks Kubernetes workload CPU requests/usage for capacity checks. | ![CPU usage dashboard](../img/monitor-cpu-usage.png) |
