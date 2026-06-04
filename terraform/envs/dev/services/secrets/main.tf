@@ -82,7 +82,8 @@ locals {
     Service     = "secrets"
   }
 
-  ssm_parameter_arn_prefix = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_prefix}/*"
+  ssm_parameter_arn_prefix                  = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_prefix}/*"
+  grafana_image_render_ssm_parameter_prefix = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.grafana_image_render_ssm_prefix}/*"
 
   oidc_provider_url = data.terraform_remote_state.eks.outputs.oidc_provider_url
   oidc_provider_arn = data.terraform_remote_state.eks.outputs.oidc_provider_arn
@@ -93,6 +94,10 @@ locals {
     app_username    = "${var.ssm_prefix}/app_username"
     app_password    = "${var.ssm_prefix}/app_password"
     app_mongodb_uri = "${var.ssm_prefix}/app_mongodb_uri"
+  }
+
+  grafana_image_renderer_ssm_parameters = {
+    auth_token = "${var.grafana_image_render_ssm_prefix}/grafana_image_render_auth_token"
   }
 }
 
@@ -163,7 +168,10 @@ data "aws_iam_policy_document" "eso_ssm_read" {
       "ssm:GetParameters",
       "ssm:GetParametersByPath",
     ]
-    resources = [local.ssm_parameter_arn_prefix]
+    resources = [
+      local.ssm_parameter_arn_prefix,
+      local.grafana_image_render_ssm_parameter_prefix,
+    ]
   }
 }
 
@@ -310,6 +318,11 @@ resource "random_password" "mongo_app" {
   special = false
 }
 
+resource "random_password" "grafana_image_renderer" {
+  length  = 32
+  special = false
+}
+
 resource "aws_ssm_parameter" "mongo_root_username" {
   name  = local.mongo_ssm_parameters.root_username
   type  = "SecureString"
@@ -342,5 +355,12 @@ resource "aws_ssm_parameter" "mongo_app_mongodb_uri" {
   name  = local.mongo_ssm_parameters.app_mongodb_uri
   type  = "SecureString"
   value = "mongodb://${var.mongo_app_username}:${random_password.mongo_app.result}@${var.mongo_host}/${var.mongo_database_name}?authSource=admin"
+  tags  = local.common_tags
+}
+
+resource "aws_ssm_parameter" "grafana_image_renderer_auth_token" {
+  name  = local.grafana_image_renderer_ssm_parameters.auth_token
+  type  = "SecureString"
+  value = random_password.grafana_image_renderer.result
   tags  = local.common_tags
 }

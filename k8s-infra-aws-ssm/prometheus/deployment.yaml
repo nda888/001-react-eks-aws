@@ -35,7 +35,7 @@ spec:
               mountPath: /prometheus
       containers:
         - name: prometheus
-          image: prom/prometheus:v2.54.1
+          image: prom/prometheus:v3.5.0
           args:
             - --config.file=/etc/prometheus/prometheus.yml
             - --storage.tsdb.path=/prometheus
@@ -62,7 +62,7 @@ spec:
               mountPath: /prometheus
               subPath: prometheus
         - name: nginx
-          image: nginx:alpine
+          image: nginx:1.27.5-alpine
           ports:
             - containerPort: 8080
           volumeMounts:

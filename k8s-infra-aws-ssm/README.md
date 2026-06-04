@@ -5,12 +5,13 @@
 | Backend | `demo-backend` → ECR `dev-demo-backend` | HPA 1-4 | RollingUpdate, 150m CPU / 256Mi memory request, probes on :3000 |
 | Frontend | `demo-frontend` → ECR `dev-demo-frontend` | HPA 1-4 | 100m CPU / 128Mi memory request, probes on :3000 |
 | MongoDB | `mongo:8.0.23` | 1 (StatefulSet) | PVC 5Gi gp3, affinity `workload=stateful` + `us-east-1a` |
-| Prometheus | `prom/prometheus:v2.54.1` | 1 | 7d retention, basic auth via nginx proxy |
-| Grafana | `grafana/grafana:11.2.0` | 1 | Probes enabled; no explicit pod affinity in current manifest |
+| Prometheus | `prom/prometheus:v3.5.0` | 1 | 7d retention, basic auth via pinned nginx proxy |
+| Grafana | `grafana/grafana:13.0.2` | 1 | Probes enabled, image export via remote renderer, no explicit pod affinity |
+| Grafana Image Renderer | `grafana/grafana-image-renderer:4.1.5` | 1 | Remote rendering on :8081, 32-character SSM-backed auth token, `TZ=Asia/Bangkok` |
 | Loki | Built-in | — | Log aggregation |
-| Grafana Alloy | Built-in | — | Log tailing from `/var/log/pods` |
-| Metrics Server | Built-in | — | Cluster metrics |
-| Cluster Autoscaler | Built-in | — | Node scaling |
+| Grafana Alloy | `grafana/alloy:v1.16.2` | — | Log tailing from `/var/log/pods` |
+| Metrics Server | `registry.k8s.io/metrics-server/metrics-server:v0.8.1` | — | Cluster metrics |
+| Cluster Autoscaler | `registry.k8s.io/autoscaling/cluster-autoscaler:v1.34.0` | 1 | Node scaling |
 
 ## Apply
 
@@ -77,9 +78,24 @@ demo-react-eks.h0m3.xyz CNAME <ALB DNS hostname>
 ## Monitoring
 
 - **Prometheus** — scrapes pod, cAdvisor, kubelet metrics. 7-day retention. Protected by basic auth (nginx proxy).
-- **Grafana** — pre-provisioned with Prometheus + Loki datasources. Dashboards for API/frontend/MongoDB logs, PVC storage, CPU resources.
+- **Grafana** — pre-provisioned with Prometheus + Loki datasources. Dashboards for API/frontend/MongoDB logs, PVC storage, CPU resources. Image export uses remote Grafana Image Renderer with 32-character SSM-backed auth token, internal render callback URLs, public root URL `https://grafana-demo.h0m3.xyz/`, and `TZ=Asia/Bangkok` for UTC+07 exports.
 - **Loki** — stores pod logs.
 - **Grafana Alloy** — tails logs from `/var/log/pods` in `dev` namespace.
+
+Validate rendered monitoring manifests:
+
+```bash
+kubectl kustomize k8s-infra-aws-ssm >/tmp/k8s-infra-aws-ssm-rendered.yaml
+python3 -m json.tool k8s-infra-aws-ssm/grafana/dashboards/mongodb-storage.json >/dev/null
+bash -n script/deploy-ssm-grafana-dashboards.sh
+```
+
+Validate renderer after deployment:
+
+```bash
+kubectl -n dev rollout status deploy/grafana-image-renderer --timeout=180s
+kubectl -n dev get deploy grafana-image-renderer -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}' | grep '^TZ=Asia/Bangkok$'
+```
 
 Access Grafana via port-forward or internal ingress.
 

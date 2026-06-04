@@ -32,7 +32,7 @@ yq -y 'select(.kind == "ConfigMap" and (.metadata.name == "grafana-dashboard-pro
   "${RENDERED_MANIFEST}" >"${FILTERED_MANIFEST}"
 
 for configmap_name in grafana-dashboard-provider grafana-dashboards; do
-  if ! yq -e "select(.kind == \"ConfigMap\" and .metadata.name == \"${configmap_name}\")" "${FILTERED_MANIFEST}" >/dev/null; then
+  if ! yq -s -e "any(.[]; .kind == \"ConfigMap\" and .metadata.name == \"${configmap_name}\")" "${FILTERED_MANIFEST}" >/dev/null; then
     echo "ERROR: rendered Grafana ConfigMap missing: ${configmap_name}" >&2
     exit 1
   fi
