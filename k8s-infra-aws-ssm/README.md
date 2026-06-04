@@ -8,7 +8,7 @@
 | Prometheus | `prom/prometheus:v3.5.0` | 1 | 7d retention, basic auth via pinned nginx proxy |
 | Grafana | `grafana/grafana:13.0.2` | 1 | Probes enabled, image export via remote renderer, no explicit pod affinity |
 | Grafana Image Renderer | `grafana/grafana-image-renderer:4.1.5` | 1 | Remote rendering on :8081, 32-character SSM-backed auth token, `TZ=Asia/Bangkok` |
-| Loki | Built-in | — | Log aggregation |
+| Loki | `grafana/loki:3.7.2` | 1 | Log aggregation, 7d retention, PVC-backed chunks/index |
 | Grafana Alloy | `grafana/alloy:v1.16.2` | — | Log tailing from `/var/log/pods` |
 | Metrics Server | `registry.k8s.io/metrics-server/metrics-server:v0.8.1` | — | Cluster metrics |
 | Cluster Autoscaler | `registry.k8s.io/autoscaling/cluster-autoscaler:v1.34.0` | 1 | Node scaling |
@@ -81,6 +81,16 @@ demo-react-eks.h0m3.xyz CNAME <ALB DNS hostname>
 - **Grafana** — pre-provisioned with Prometheus + Loki datasources. Dashboards for API/frontend/MongoDB logs, PVC storage, CPU resources. Image export uses remote Grafana Image Renderer with 32-character SSM-backed auth token, internal render callback URLs, public root URL `https://grafana-demo.h0m3.xyz/`, and `TZ=Asia/Bangkok` for UTC+07 exports.
 - **Loki** — stores pod logs.
 - **Grafana Alloy** — tails logs from `/var/log/pods` in `dev` namespace.
+
+### Dashboard screenshots
+
+Grafana dashboards cover cluster workload health and MongoDB storage capacity.
+
+| Dashboard | Purpose | Screenshot |
+|-----------|---------|------------|
+| CPU usage | Tracks Kubernetes workload CPU requests/usage for capacity checks. | ![CPU usage dashboard](../img/monitor-cpu-usage.png) |
+| Memory usage | Tracks workload memory pressure and helps spot saturation. | ![Memory usage dashboard](../img/monitor-memory-usage.png) |
+| MongoDB storage | Tracks MongoDB PVC used percent and used bytes after dashboard layout update. | ![MongoDB storage dashboard](../img/monitor-mongo-storage.png) |
 
 Validate rendered monitoring manifests:
 
