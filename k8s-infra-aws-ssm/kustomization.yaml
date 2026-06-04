@@ -41,6 +41,9 @@ resources:
   - grafana/alloy.yaml
   - grafana/datasources.yaml
   - grafana/dashboards.yaml
+  - grafana/image-renderer-external-secret.yaml
+  - grafana/image-renderer-service.yaml
+  - grafana/image-renderer-deployment.yaml
   - grafana/service.yaml
   - grafana/ingress.yaml
   - prometheus/ingress.yaml

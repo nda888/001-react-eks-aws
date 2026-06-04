@@ -40,6 +40,12 @@ variable "ssm_prefix" {
   default     = "/demo-eks-dev/mongo"
 }
 
+variable "grafana_image_render_ssm_prefix" {
+  description = "SSM parameter prefix for Grafana image renderer secrets"
+  type        = string
+  default     = "/demo-eks-dev/image-render"
+}
+
 variable "external_secrets_chart_version" {
   description = "External Secrets Operator Helm chart version"
   type        = string

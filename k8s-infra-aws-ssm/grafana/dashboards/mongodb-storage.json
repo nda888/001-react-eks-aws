@@ -10,6 +10,32 @@
   },
   "panels": [
     {
+      "type": "stat",
+      "title": "MongoDB PVC used percent",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "targets": [
+        {
+          "expr": "100 * kubelet_volume_stats_used_bytes{namespace=\"dev\", persistentvolumeclaim=~\"mongo-data-.*\"} / kubelet_volume_stats_capacity_bytes{namespace=\"dev\", persistentvolumeclaim=~\"mongo-data-.*\"}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 7,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
       "type": "timeseries",
       "title": "MongoDB PVC used bytes",
       "datasource": {
@@ -36,35 +62,9 @@
       },
       "gridPos": {
         "h": 9,
-        "w": 24,
-        "x": 0,
+        "w": 17,
+        "x": 7,
         "y": 0
-      }
-    },
-    {
-      "type": "stat",
-      "title": "MongoDB PVC used percent",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      },
-      "targets": [
-        {
-          "expr": "100 * kubelet_volume_stats_used_bytes{namespace=\"dev\", persistentvolumeclaim=~\"mongo-data-.*\"} / kubelet_volume_stats_capacity_bytes{namespace=\"dev\", persistentvolumeclaim=~\"mongo-data-.*\"}",
-          "refId": "A"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 12,
-        "x": 0,
-        "y": 9
       }
     }
   ]
