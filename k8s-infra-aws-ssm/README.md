@@ -1,7 +1,3 @@
-# k8s-infra-aws
-
-AWS EKS manifests for the demo React + Express + MongoDB app.
-
 ## Architecture
 
 | Component | Image | Replicas | Notes |
@@ -10,7 +6,7 @@ AWS EKS manifests for the demo React + Express + MongoDB app.
 | Frontend | `demo-frontend` → ECR `dev-demo-frontend` | HPA 1-4 | 100m CPU / 128Mi memory request, probes on :3000 |
 | MongoDB | `mongo:8.0.23` | 1 (StatefulSet) | PVC 5Gi gp3, affinity `workload=stateful` + `us-east-1a` |
 | Prometheus | `prom/prometheus:v2.54.1` | 1 | 7d retention, basic auth via nginx proxy |
-| Grafana | `grafana/grafana:11.2.0` | 1 | Pod affinity to prometheus node |
+| Grafana | `grafana/grafana:11.2.0` | 1 | Probes enabled; no explicit pod affinity in current manifest |
 | Loki | Built-in | — | Log aggregation |
 | Grafana Alloy | Built-in | — | Log tailing from `/var/log/pods` |
 | Metrics Server | Built-in | — | Cluster metrics |
@@ -101,7 +97,7 @@ Access Grafana via port-forward or internal ingress.
 | MongoDB | `nodeAffinity`: `workload=stateful` + `topology.kubernetes.io/zone=us-east-1a`, `toleration: workload=stateful:NoSchedule` |
 | Backend | None — schedules freely on any node |
 | Frontend | None — schedules freely on any node |
-| Grafana | Pod affinity to Prometheus node |
+| Grafana | None — no explicit pod affinity in current manifest |
 
 ## Notes
 
