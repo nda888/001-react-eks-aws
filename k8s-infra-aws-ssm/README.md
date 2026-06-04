@@ -77,11 +77,6 @@ demo-react-eks.h0m3.xyz CNAME <ALB DNS hostname>
 
 ## Monitoring
 
-- **Prometheus** — scrapes pod, cAdvisor, kubelet metrics. 7-day retention. Protected by basic auth (nginx proxy).
-- **Grafana** — pre-provisioned with Prometheus + Loki datasources. Dashboards for API/frontend/MongoDB logs, PVC storage, CPU resources. Image export uses remote Grafana Image Renderer with 32-character SSM-backed auth token, internal render callback URLs, public root URL `https://grafana-demo.h0m3.xyz/`, and `TZ=Asia/Bangkok` for UTC+07 exports.
-- **Loki** — stores pod logs.
-- **Grafana Alloy** — tails logs from `/var/log/pods` in `dev` namespace.
-
 | Dashboard | Purpose | Screenshot |
 |-----------|---------|------------|
 | CPU usage | Tracks Kubernetes workload CPU requests/usage for capacity checks. | ![CPU usage dashboard](../img/monitor-cpu-usage.png) |
