@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: grafana-datasources
-  namespace: dev
+  namespace: monitor
 data:
   datasources.yaml: |
     apiVersion: 1

@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: grafana-image-renderer
-  namespace: dev
+  namespace: monitor
   labels:
     app: grafana-image-renderer
 spec:

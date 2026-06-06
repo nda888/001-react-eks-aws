@@ -5,11 +5,11 @@
 | Backend | `demo-backend` → ECR `dev-demo-backend` | HPA 1-4 | RollingUpdate, 150m CPU / 256Mi memory request, probes on :3000 |
 | Frontend | `demo-frontend` → ECR `dev-demo-frontend` | HPA 1-4 | 100m CPU / 128Mi memory request, probes on :3000 |
 | MongoDB | `mongo:8.0.23` | 1 (StatefulSet) | PVC 5Gi gp3, affinity `workload=stateful` + `us-east-1a` |
-| Prometheus | `prom/prometheus:v3.5.0` | 1 | 7d retention, basic auth via pinned nginx proxy |
-| Grafana | `grafana/grafana:13.0.2` | 1 | Probes enabled, image export via remote renderer, no explicit pod affinity |
+| Prometheus | `prom/prometheus:v3.5.0` | 1 | Runs in `monitor`, 7d retention, basic auth via pinned nginx proxy |
+| Grafana | `grafana/grafana:13.0.2` | 1 | Runs in `monitor`, probes enabled, image export via remote renderer, no explicit pod affinity |
 | Grafana Image Renderer | `grafana/grafana-image-renderer:4.1.5` | 1 | Remote rendering on :8081, 32-character SSM-backed auth token, `TZ=Asia/Bangkok` |
-| Loki | `grafana/loki:3.7.2` | 1 | Log aggregation, 7d retention, PVC-backed chunks/index |
-| Grafana Alloy | `grafana/alloy:v1.16.2` | — | Log tailing from `/var/log/pods` |
+| Loki | `grafana/loki:3.7.2` | 1 | Runs in `monitor`, log aggregation, 7d retention, PVC-backed chunks/index |
+| Grafana Alloy | `grafana/alloy:v1.16.2` | — | Runs in `monitor`, tails `/var/log/pods` for `dev` and `monitor` workloads |
 | Metrics Server | `registry.k8s.io/metrics-server/metrics-server:v0.8.1` | — | Cluster metrics |
 | Cluster Autoscaler | `registry.k8s.io/autoscaling/cluster-autoscaler:v1.34.0` | 1 | Node scaling |
 
@@ -94,18 +94,20 @@ bash -n script/deploy-ssm-grafana-dashboards.sh
 Validate renderer after deployment:
 
 ```bash
-kubectl -n dev rollout status deploy/grafana-image-renderer --timeout=180s
-kubectl -n dev get deploy grafana-image-renderer -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}' | grep '^TZ=Asia/Bangkok$'
+kubectl -n monitor rollout status deploy/grafana-image-renderer --timeout=180s
+kubectl -n monitor get deploy grafana-image-renderer -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}={.value}{"\n"}{end}' | grep '^TZ=Asia/Bangkok$'
 ```
 
-Access Grafana via port-forward or internal ingress.
+Access Grafana and Prometheus through unchanged public hostnames after monitor namespace cutover.
 
 ## Storage
 
 - **StorageClass**: `gp3` (EBS CSI, encrypted, `WaitForFirstConsumer`)
 - **MongoDB PVC**: 5Gi `ReadWriteOnce`
-- **Prometheus PVC**: `monitoring-data` claim
-- **Grafana PVC**: `monitoring-data` claim (shared with Prometheus)
+- **Prometheus PVC**: `prometheus-data` claim in `monitor`
+- **Grafana PVC**: `grafana-data` claim in `monitor`
+- **Loki PVC**: `loki-data` claim in `monitor`
+- **Namespace cutover**: observability PVCs are fresh in `monitor`; old `dev` PVCs are preserved until explicit cleanup approval
 
 ## Scheduling
 

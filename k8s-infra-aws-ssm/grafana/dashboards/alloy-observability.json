@@ -18,7 +18,7 @@
       },
       "targets": [
         {
-          "expr": "max by (pod) (process_resident_memory_bytes{namespace=\"dev\", app=\"alloy\"})",
+          "expr": "max by (pod) (process_resident_memory_bytes{namespace=\"monitor\", app=\"alloy\"})",
           "legendFormat": "{{pod}}",
           "refId": "A"
         }
@@ -45,7 +45,7 @@
       },
       "targets": [
         {
-          "expr": "max by (pod) (container_memory_working_set_bytes{namespace=\"dev\", pod=~\"alloy.*\", container=\"alloy\"})",
+          "expr": "max by (pod) (container_memory_working_set_bytes{namespace=\"monitor\", pod=~\"alloy.*\", container=\"alloy\"})",
           "legendFormat": "{{pod}}",
           "refId": "A"
         }
@@ -72,7 +72,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"dev\", pod=~\"alloy.*\", container=\"alloy\"}[5m]))",
+          "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"monitor\", pod=~\"alloy.*\", container=\"alloy\"}[5m]))",
           "legendFormat": "{{pod}}",
           "refId": "A"
         }
@@ -100,7 +100,7 @@
       },
       "targets": [
         {
-          "expr": "sum(up{namespace=\"dev\", app=\"alloy\"})",
+          "expr": "sum(up{namespace=\"monitor\", app=\"alloy\"})",
           "refId": "A"
         }
       ],
