@@ -63,7 +63,7 @@ configMapGenerator:
     options:
       disableNameSuffixHash: true
   - name: grafana-dashboards
-    namespace: dev
+    namespace: monitor
     files:
       - app-logs.json=grafana/dashboards/app-logs.json
       - mongodb-storage.json=grafana/dashboards/mongodb-storage.json

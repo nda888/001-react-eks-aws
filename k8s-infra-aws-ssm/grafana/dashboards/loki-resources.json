@@ -18,7 +18,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"dev\", pod=~\"loki.*\", container=\"loki\"}[5m]))",
+          "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"monitor\", pod=~\"loki.*\", container=\"loki\"}[5m]))",
           "legendFormat": "{{pod}}",
           "refId": "A"
         }
@@ -46,7 +46,7 @@
       },
       "targets": [
         {
-          "expr": "sum(container_memory_working_set_bytes{namespace=\"dev\", pod=~\"loki.*\", container=\"loki\"})",
+          "expr": "sum(container_memory_working_set_bytes{namespace=\"monitor\", pod=~\"loki.*\", container=\"loki\"})",
           "refId": "A"
         }
       ],
@@ -89,7 +89,7 @@
       },
       "targets": [
         {
-          "expr": "kubelet_volume_stats_used_bytes{namespace=\"dev\", persistentvolumeclaim=\"loki-data\"} / kubelet_volume_stats_capacity_bytes{namespace=\"dev\", persistentvolumeclaim=\"loki-data\"}",
+          "expr": "kubelet_volume_stats_used_bytes{namespace=\"monitor\", persistentvolumeclaim=\"loki-data\"} / kubelet_volume_stats_capacity_bytes{namespace=\"monitor\", persistentvolumeclaim=\"loki-data\"}",
           "refId": "A"
         }
       ],
@@ -131,7 +131,7 @@
       },
       "targets": [
         {
-          "expr": "kubelet_volume_stats_used_bytes{namespace=\"dev\", persistentvolumeclaim=\"loki-data\"}",
+          "expr": "kubelet_volume_stats_used_bytes{namespace=\"monitor\", persistentvolumeclaim=\"loki-data\"}",
           "refId": "A"
         }
       ],
@@ -174,12 +174,12 @@
       },
       "targets": [
         {
-          "expr": "kubelet_volume_stats_used_bytes{namespace=\"dev\", persistentvolumeclaim=\"loki-data\"}",
+          "expr": "kubelet_volume_stats_used_bytes{namespace=\"monitor\", persistentvolumeclaim=\"loki-data\"}",
           "legendFormat": "used",
           "refId": "A"
         },
         {
-          "expr": "kubelet_volume_stats_capacity_bytes{namespace=\"dev\", persistentvolumeclaim=\"loki-data\"}",
+          "expr": "kubelet_volume_stats_capacity_bytes{namespace=\"monitor\", persistentvolumeclaim=\"loki-data\"}",
           "legendFormat": "capacity",
           "refId": "B"
         }

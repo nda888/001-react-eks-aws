@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: prometheus-nginx-config
-  namespace: dev
+  namespace: monitor
 data:
   default.conf: |
     server {
