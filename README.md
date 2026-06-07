@@ -1,5 +1,3 @@
-Noting App
-
 <p align="center">
   <img src="img/react.png" alt="React Note App" />
 </p>
