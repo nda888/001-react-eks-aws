@@ -1,4 +1,4 @@
-React, Express, MongoDB are deployed to AWS EKS with Terraform, ECR, ALB, SSM secrets, and Grafana observability.
+Noting App
 
 <p align="center">
   <img src="img/react.png" alt="React Note App" />
