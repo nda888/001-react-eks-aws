@@ -2,6 +2,7 @@ services:
   frontend:
     build:
       context: frontend
+      dockerfile: Dockerfile-local
       target: development
     ports:
       - 3000:3000
@@ -19,6 +20,7 @@ services:
     restart: always
     build:
       context: backend
+      dockerfile: Dockerfile-local
       target: development
     volumes:
       - ./backend:/usr/src/app
@@ -34,9 +36,11 @@ services:
       - 3000
   mongo:
     restart: always
-    image: mongo:8.0.23
+    image: ${MONGO_IMAGE:-mongo:8.0.23}
     env_file:
       - .env
+    environment:
+      - GLIBC_TUNABLES=glibc.pthread.rseq=1
     volumes:
       - mongo_data:/data/db
     networks:

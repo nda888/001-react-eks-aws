@@ -6,6 +6,9 @@ resources:
   - storageclass-gp3.yaml
   - grafana/loki-pvc.yaml
   - grafana/grafana-pvc.yaml
+  - grafana/image-renderer-external-secret.yaml
+  - grafana/image-renderer-service.yaml
+  - grafana/image-renderer-deployment.yaml
   - prometheus/prometheus-pvc.yaml
   - metrics-server/rbac.yaml
   - metrics-server/service.yaml
@@ -14,25 +17,26 @@ resources:
   - cluster-autoscaler/rbac.yaml
   - cluster-autoscaler/deployment.yaml
   - external-secrets/secretstore.yaml
-  - external-secrets/mongo-root-external-secret.yaml
-  - external-secrets/mongo-app-external-secret.yaml
-  - mongo/service.yaml
-  - mongo/statefulset.yaml
-  - mongo/create-app-user-job.yaml
-  - mongo/rotate-app-user-rbac.yaml
-  - mongo/rotate-app-user-cronjob.yaml
-  - mongo/rotate-root-user-cronjob.yaml
-  - backend/configmap.yaml
-  - backend/service.yaml
-  - backend/deployment.yaml
-  - frontend/service.yaml
-  - frontend/deployment.yaml
-  - ingress.yaml
-  - backend/hpa.yaml
-  - frontend/hpa.yaml
+  # --- DEV resources ---
+  - external-secrets/mongo-root-external-secret-dev.yaml
+  - external-secrets/mongo-app-external-secret-dev.yaml
+  - mongo/service-dev.yaml
+  - mongo/statefulset-dev.yaml
+  - mongo/create-app-user-job-dev.yaml
+  - mongo/rotate-app-user-rbac-dev.yaml
+  - mongo/rotate-app-user-cronjob-dev.yaml
+  - mongo/rotate-root-user-cronjob-dev.yaml
+  - backend/configmap-dev.yaml
+  - backend/service-dev.yaml
+  - backend/deployment-dev.yaml
+  - frontend/service-dev.yaml
+  - frontend/deployment-dev.yaml
+  - ingress-dev.yaml
+  - backend/hpa-dev.yaml
+  - frontend/hpa-dev.yaml
   - prometheus/rbac.yaml
   - prometheus/configmap.yaml
-  - prometheus/basic-auth-secret.yaml
+  - prometheus/basic-auth-external-secret-dev.yaml
   - prometheus/nginx-config.yaml
   - prometheus/service.yaml
   - prometheus/service-internal.yaml
@@ -41,19 +45,34 @@ resources:
   - grafana/alloy.yaml
   - grafana/datasources.yaml
   - grafana/dashboards.yaml
-  - grafana/image-renderer-external-secret.yaml
-  - grafana/image-renderer-service.yaml
-  - grafana/image-renderer-deployment.yaml
   - grafana/service.yaml
   - grafana/ingress.yaml
   - prometheus/ingress.yaml
   - grafana/deployment.yaml
+  # --- UAT resources ---
+  - external-secrets/mongo-root-external-secret-uat.yaml
+  - external-secrets/mongo-app-external-secret-uat.yaml
+  - mongo/service-uat.yaml
+  - mongo/statefulset-uat.yaml
+  - mongo/create-app-user-job-uat.yaml
+  - mongo/rotate-app-user-rbac-uat.yaml
+  - mongo/rotate-app-user-cronjob-uat.yaml
+  - mongo/rotate-root-user-cronjob-uat.yaml
+  - backend/configmap-uat.yaml
+  - backend/service-uat.yaml
+  - backend/deployment-uat.yaml
+  - frontend/service-uat.yaml
+  - frontend/deployment-uat.yaml
+  - ingress-uat.yaml
+  - backend/hpa-uat.yaml
+  - frontend/hpa-uat.yaml
+  - prometheus/basic-auth-external-secret-uat.yaml
 
 configMapGenerator:
   - name: mongo-rotate-script
     namespace: dev
     files:
-      - rotate.sh=mongo/scripts/rotate-app-user.sh
+      - rotate-user.sh=mongo/scripts/rotate-app-user.sh
     options:
       disableNameSuffixHash: true
   - name: mongo-root-rotate-script
@@ -65,10 +84,36 @@ configMapGenerator:
   - name: grafana-dashboards
     namespace: monitor
     files:
-      - app-logs.json=grafana/dashboards/app-logs.json
-      - mongodb-storage.json=grafana/dashboards/mongodb-storage.json
-      - app-cpu-resources.json=grafana/dashboards/app-cpu-resources.json
-      - app-memory-resources.json=grafana/dashboards/app-memory-resources.json
+      - dev-app-logs.json=grafana/dashboards/dev-app-logs.json
+      - dev-mongodb-storage.json=grafana/dashboards/dev-mongodb-storage.json
+      - dev-app-cpu-resources.json=grafana/dashboards/dev-app-cpu-resources.json
+      - dev-app-memory-resources.json=grafana/dashboards/dev-app-memory-resources.json
+    options:
+      disableNameSuffixHash: true
+  - name: mongo-rotate-script
+    namespace: uat
+    files:
+      - rotate-user.sh=mongo/scripts/rotate-app-user.sh
+    options:
+      disableNameSuffixHash: true
+  - name: mongo-root-rotate-script
+    namespace: uat
+    files:
+      - rotate-root.sh=mongo/scripts/rotate-root-user.sh
+    options:
+      disableNameSuffixHash: true
+  - name: grafana-uat-dashboards
+    namespace: monitor
+    files:
+      - uat-app-logs.json=grafana/dashboards/uat-app-logs.json
+      - uat-mongodb-storage.json=grafana/dashboards/uat-mongodb-storage.json
+      - uat-app-cpu-resources.json=grafana/dashboards/uat-app-cpu-resources.json
+      - uat-app-memory-resources.json=grafana/dashboards/uat-app-memory-resources.json
+    options:
+      disableNameSuffixHash: true
+  - name: grafana-logs-dashboards
+    namespace: monitor
+    files:
       - alloy-observability.json=grafana/dashboards/alloy-observability.json
       - loki-resources.json=grafana/dashboards/loki-resources.json
     options:
@@ -76,10 +121,22 @@ configMapGenerator:
 
 images:
   - name: demo-backend
-    newName: PLACEHOLDER_ECR_REGISTRY/dev-demo-backend
+    newName: 654654604308.dkr.ecr.us-east-1.amazonaws.com/dev-demo-backend
     newTag: latest
   - name: demo-frontend
-    newName: PLACEHOLDER_ECR_REGISTRY/dev-demo-frontend
+    newName: 654654604308.dkr.ecr.us-east-1.amazonaws.com/dev-demo-frontend
+    newTag: latest
+  - name: demo-mongo-rotator
+    newName: 654654604308.dkr.ecr.us-east-1.amazonaws.com/dev-mongo-rotator
+    newTag: latest
+  - name: uat-demo-backend
+    newName: 654654604308.dkr.ecr.us-east-1.amazonaws.com/uat-demo-backend
+    newTag: latest
+  - name: uat-demo-frontend
+    newName: 654654604308.dkr.ecr.us-east-1.amazonaws.com/uat-demo-frontend
+    newTag: latest
+  - name: uat-mongo-rotator
+    newName: 654654604308.dkr.ecr.us-east-1.amazonaws.com/uat-mongo-rotator
     newTag: latest
 
 

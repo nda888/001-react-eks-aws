@@ -20,7 +20,7 @@ spec:
       serviceAccountName: cluster-autoscaler
       priorityClassName: system-cluster-critical
       containers:
-        - image: registry.k8s.io/autoscaling/cluster-autoscaler:v1.34.0
+        - image: registry.k8s.io/autoscaling/cluster-autoscaler:v1.35.0
           name: cluster-autoscaler
           resources:
             requests:

@@ -1,0 +1,43 @@
+FROM mongo:8.0.23 AS base
+
+# Pinned tool versions — update these when bumping
+ARG AWS_CLI_VERSION=2.24.0
+ARG KUBECTL_VERSION=v1.32.0
+
+# AWS CLI SHA256 — pinned per arch
+# Regenerate via scripts/update-rotator-pins.sh when AWS_CLI_VERSION changes.
+ARG AWS_CLI_SHA256_AARCH64=bd5c3d645fa92624c0cb85f0bda0a373e5354faac99f21f244b2813dbdea3c3d
+ARG AWS_CLI_SHA256_X86_64=4e3c39d9881cb6f893ea93219d971390864b1f7e3756197413a7de38ce059609
+
+RUN apt-get update -qq && \
+    apt-get install -qq -y --no-install-recommends \
+      curl \
+      unzip \
+      openssl \
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# AWS CLI v2 — pinned SHA256 verification (upstream publishes no .sha256 file)
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ]; then AWS_ARCH=aarch64; EXPECTED_SHA="${AWS_CLI_SHA256_AARCH64}"; \
+    else AWS_ARCH=x86_64; EXPECTED_SHA="${AWS_CLI_SHA256_X86_64}"; fi && \
+    curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}-${AWS_CLI_VERSION}.zip" -o /tmp/awscliv2.zip && \
+    printf '%s  %s\n' "${EXPECTED_SHA}" /tmp/awscliv2.zip | sha256sum -c - && \
+    unzip -q /tmp/awscliv2.zip -d /tmp && \
+    /tmp/aws/install && \
+    rm -rf /tmp/awscliv2.zip /tmp/aws
+
+# kubectl — dynamic SHA256 fetch (upstream publishes plain-text .sha256)
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "aarch64" ]; then K8S_ARCH=arm64; else K8S_ARCH=amd64; fi && \
+    curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${K8S_ARCH}/kubectl" -o /usr/local/bin/kubectl && \
+    EXPECTED_SHA="$(curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${K8S_ARCH}/kubectl.sha256" | tr -d '[:space:]')" && \
+    echo "${EXPECTED_SHA}" | grep -Eq '^[0-9a-fA-F]{64}$' && \
+    printf '%s  %s\n' "${EXPECTED_SHA}" /usr/local/bin/kubectl | sha256sum -c - && \
+    chmod +x /usr/local/bin/kubectl
+
+RUN useradd -u 1001 -m rotator
+
+USER rotator
+
+CMD ["bash"]

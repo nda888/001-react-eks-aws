@@ -4,8 +4,34 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${SCRIPT_DIR}/.."
 
+ENV="${1:-dev}"
+if [[ "${ENV}" != "dev" && "${ENV}" != "uat" && "${ENV}" != "all" ]]; then
+  echo "Usage: $0 <dev|uat|all>" >&2
+  exit 1
+fi
+(($# > 0)) && shift
+
+if [[ "${ENV}" == "all" ]]; then
+  echo "==> Pushing frontend+backend ECR images ALL environments: dev, then uat"
+  "${BASH_SOURCE[0]}" dev "$@"
+  "${BASH_SOURCE[0]}" uat "$@"
+  echo "==> ALL environments ECR images pushed (dev + uat)"
+  exit 0
+fi
+
 AWS_REGION="${AWS_REGION:-us-east-1}"
 AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-}"
+
+case "${ENV}" in
+  dev)
+    BACKEND_REPO="dev-demo-backend"
+    FRONTEND_REPO="dev-demo-frontend"
+    ;;
+  uat)
+    BACKEND_REPO="uat-demo-backend"
+    FRONTEND_REPO="uat-demo-frontend"
+    ;;
+esac
 
 command -v aws >/dev/null || { echo "ERROR: aws CLI not found" >&2; exit 1; }
 command -v docker >/dev/null || { echo "ERROR: docker not found" >&2; exit 1; }
@@ -26,8 +52,8 @@ docker buildx version >/dev/null 2>&1 \
   || { echo "ERROR: src/frontend directory not found" >&2; exit 1; }
 
 ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-BACKEND_IMAGE="${ECR_REGISTRY}/dev-demo-backend:latest"
-FRONTEND_IMAGE="${ECR_REGISTRY}/dev-demo-frontend:latest"
+BACKEND_IMAGE="${ECR_REGISTRY}/${BACKEND_REPO}:latest"
+FRONTEND_IMAGE="${ECR_REGISTRY}/${FRONTEND_REPO}:latest"
 
 echo "[1/4] Login to ECR"
 
@@ -61,7 +87,7 @@ echo "[4/4] Verify images in ECR"
 
 aws ecr describe-images \
   --region "${AWS_REGION}" \
-  --repository-name dev-demo-backend \
+  --repository-name "${BACKEND_REPO}" \
   --image-ids imageTag=latest \
   --query 'imageDetails[0].{repository:repositoryName,tag:imageTags[0],pushedAt:imagePushedAt}' \
   --output table \
@@ -69,7 +95,7 @@ aws ecr describe-images \
 
 aws ecr describe-images \
   --region "${AWS_REGION}" \
-  --repository-name dev-demo-frontend \
+  --repository-name "${FRONTEND_REPO}" \
   --image-ids imageTag=latest \
   --query 'imageDetails[0].{repository:repositoryName,tag:imageTags[0],pushedAt:imagePushedAt}' \
   --output table \

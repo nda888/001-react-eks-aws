@@ -172,10 +172,16 @@ resource "aws_security_group_rule" "alb_frontend_egress_healthcheck" {
   description       = "Allow ALB to reach prometheus pod targets on port 8080 for health checks and traffic"
 }
 
-# --- Dev namespace (prerequisite for ConfigMap and kustomize resources) ---
+# --- Dev and UAT namespaces (prerequisite for environment resources) ---
 resource "kubernetes_namespace" "dev" {
   metadata {
     name = "dev"
+  }
+}
+
+resource "kubernetes_namespace" "uat" {
+  metadata {
+    name = "uat"
   }
 }
 

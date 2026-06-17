@@ -5,9 +5,9 @@ variable "aws_region" {
 }
 
 variable "state_bucket" {
-  description = "Terraform remote state bucket. Provide through backend config or local tfvars."
+  description = "S3 bucket name for Terraform remote state"
   type        = string
-  nullable    = false
+  default     = "demo-react-express-s3"
 }
 
 variable "cluster_autoscaler_service_account_name" {

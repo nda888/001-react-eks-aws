@@ -1,41 +1,68 @@
-#### Snippet of backend(Node.js)`DockerFile`
+# Backend — Express API
 
-You will find this `DockerFile` file in the root directory of the project.
+## Stack
 
-```bash
-FROM node:13.13.0-stretch-slim
-#Argument that is passed from docer-compose.yaml file
-ARG NODE_PORT
-#Echo the argument to check passed argument loaded here correctly
-RUN echo "Argument port is : $NODE_PORT"
-# Create app directory
-WORKDIR /usr/src/app
-#COPY . .
-COPY . .
-# Install app dependencies
-# A wildcard is used to ensure both package.json AND package-lock.json are copied
-# where available (npm@5+)
-RUN npm install
-#In my case my app binds to port NODE_PORT so you'll use the EXPOSE instruction to have it mapped by the docker daemon:
-EXPOSE ${NODE_PORT}
-CMD npm run dev
+| Layer | Technology |
+| --- | --- |
+| Runtime | Node 22 |
+| Framework | Express 4 |
+| Database | MongoDB 8.0 (via Mongoose 6) |
+| Dev runner | Nodemon |
+
+## Structure
+
+```
+backend/
+├── Dockerfile               # Production image (node:22-bookworm-slim)
+├── Dockerfile-local          # Local dev image (same as Dockerfile)
+├── server.js                 # Entry point
+├── config/                   # App config
+├── db/                       # Mongoose connection (retry logic)
+├── models/todos/             # Todo model
+├── routes/                   # API routes
+├── utils/helpers/            # Logger, response helpers
+└── logs/                     # App log output
 ```
 
-##### Explanation of backend(Node.js) `DockerFile`
+## API routes
 
-- The first line tells Docker to use another Node image from the [DockerHub](https://hub.docker.com/). We’re using the official Docker image for Node.js and it’s version 10 image.
+Base path: `/api`
 
-- On second line we declare argument `NODE_PORT` which we will pass it from `docker-compose`.
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api` | List todos |
+| `POST` | `/api/todos` | Create todo (body: `{ "text": "..." }`, max 200 chars) |
+| `DELETE` | `/api/todos/:id` | Delete todo |
+| `GET` | `/healthz` | Liveness check |
 
-- On third line we log to check argument is successfully read 
+Rate limits (per IP): 60 req/min (list), 20 req/min (create), 30 req/min (delete).
 
-- On fourth line we sets a working directory from where the app code will live inside the Docker container.
+## Environment variables
 
-- On fifth line, we are copying/bundling our code working directory into container working directory on line three.
+Required via `.env`:
 
-- On line seven, we run npm install for dependencies in container on line four.
+| Variable | Purpose |
+| --- | --- |
+| `MONGODB_URI` | MongoDB connection string |
+| `CORS_ORIGINS` | (optional) Comma-separated allowed origins, defaults to `http://localhost:3000` |
+| `PORT` | (optional) Server port, defaults to `3000` |
 
-- On Line eight, we setup the port, that Docker will expose when the container is running. In our case it is the port which we define inside `.env` file, read it from `docker-compose` then passed as a argument to the (backend)`DockerFile`.
+## Local development
 
-- And in last, we tell docker to execute our app inside the container by using node to run `npm run dev. It is the command which I registered in __package.json__ in script section.
-###### :clipboard: `Note: For development purpose I used __nodemon__ , If you need to deploy at production you should change CMD from __npm run dev__ to __npm start__.`
+```bash
+npm install
+npm run dev      # Nodemon with hot reload
+```
+
+## Production
+
+```bash
+npm start        # node server.js
+```
+
+## Docker
+
+```bash
+docker build -t backend .
+docker run -p 3000:3000 --env-file .env backend
+```

@@ -12,8 +12,10 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # Configuration
-ENVIRONMENTS=("dev")
+ENVIRONMENTS=("dev" "uat")
 MAX_MULTI_SERVICE=2
+AUTO_YES=0
+DRY_RUN=0
 
 # ========================================
 # Utility Functions
@@ -88,6 +90,20 @@ is_terraform_init_current() {
     return 0
 }
 
+confirm_yes_no() {
+    local prompt="$1"
+    local answer
+
+    if [[ "${AUTO_YES:-0}" -eq 1 ]]; then
+        echo -e "${prompt}${CYAN}y (auto via -y)${NC}"
+        return 0
+    fi
+
+    echo -en "$prompt"
+    read -r answer
+    [[ "$answer" =~ ^[Yy]$ ]]
+}
+
 # ========================================
 # Backend Bootstrap Functions
 # ========================================
@@ -96,7 +112,6 @@ run_backend_init_command() {
     local dev_env="dev"
     local -a dev_prereq_services=("networking" "ecr")
     local service
-    local confirm
 
     if [[ $# -gt 0 ]]; then
         echo -e "${RED}ERROR: Command does not take arguments${NC}"
@@ -125,16 +140,20 @@ run_backend_init_command() {
     print_terraform_command "terraform -chdir=$bootstrap_dir plan"
     terraform -chdir="$bootstrap_dir" plan
 
-    print_terraform_command "terraform -chdir=$bootstrap_dir apply"
-    terraform -chdir="$bootstrap_dir" apply
+    if [[ "${AUTO_YES:-0}" -eq 1 ]]; then
+        print_terraform_command "terraform -chdir=$bootstrap_dir apply -auto-approve"
+        terraform -chdir="$bootstrap_dir" apply -auto-approve
+    else
+        print_terraform_command "terraform -chdir=$bootstrap_dir apply"
+        terraform -chdir="$bootstrap_dir" apply
+    fi
 
     echo -e "${YELLOW}Deploy these prerequisite services first:${NC}"
     for service in "${dev_prereq_services[@]}"; do
         echo "  ./an-deploy dev $service"
     done
 
-    read -r -p "Run these DEV prerequisite deploys now? (y/n): " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+    if ! confirm_yes_no "Run these DEV prerequisite deploys now? (y/n): "; then
         echo -e "${YELLOW}Skipped DEV prerequisite deploys.${NC}"
         echo -e "${YELLOW}Run the commands above before ./an-deploy dev-plan eks${NC}"
         echo -e "${GREEN}====== Backend init completed via ${bootstrap_dir}${NC}"
@@ -149,6 +168,25 @@ run_backend_init_command() {
     done
 
     echo -e "${GREEN}====== Backend init + DEV prerequisites completed!${NC}"
+
+    local uat_env="uat"
+    local -a uat_ecr_services=("ecr")
+    local uat_confirm
+
+    if [[ -d "$(service_dir "$uat_env" "ecr")" ]]; then
+        echo ""
+        echo -e "${YELLOW}UAT detected. Deploy UAT ECR prerequisites now?${NC}"
+        echo -e "${CYAN}Creates: uat-demo-backend, uat-demo-frontend, uat-mongo-rotator${NC}"
+        if confirm_yes_no "Deploy UAT ECR prerequisites now? (y/n): "; then
+            echo -e "${BLUE}Deploying UAT ECR service...${NC}"
+            run_service_plan "$uat_env" "ecr"
+            run_service_apply "$uat_env" "ecr"
+            echo -e "${GREEN}====== UAT ECR prerequisites completed!${NC}"
+        else
+            echo -e "${YELLOW}Skipped UAT ECR deploy.${NC}"
+            echo -e "${YELLOW}Run later: ./an-deploy uat ecr${NC}"
+        fi
+    fi
 }
 
 get_env_state_bucket() {
@@ -467,6 +505,37 @@ validate_multi_service_args() {
     return 0
 }
 
+validate_uat_blocked_service() {
+    local env="$1"
+    local service="$2"
+    local -a blocked_services=("networking" "eks" "eks-alb" "eks-post")
+
+    [[ "$env" == "uat" ]] || return 0
+
+    if array_contains "$service" "${blocked_services[@]}"; then
+        echo -e "${RED}ERROR: UAT uses shared EKS/ALB; do not apply this service for UAT.${NC}"
+        echo -e "${YELLOW}Blocked services for UAT: ${blocked_services[*]}${NC}"
+        echo -e "${YELLOW}Allowed services for UAT: ecr secrets${NC}"
+        return 1
+    fi
+
+    return 0
+}
+
+validate_uat_blocked_services() {
+    local env="$1"
+    shift
+    local service
+
+    [[ "$env" == "uat" ]] || return 0
+
+    for service in "$@"; do
+        validate_uat_blocked_service "$env" "$service" || return 1
+    done
+
+    return 0
+}
+
 # ========================================
 # No-Arguments Validation
 # ========================================
@@ -759,6 +828,11 @@ run_service_plan() {
     dir="$(service_dir "$env" "$service")"
     tfplan="$(plan_name "$service")"
 
+    if [[ "$env" == "uat" && "$service" == "secrets" ]]; then
+        echo -e "${YELLOW}Prerequisite:${NC} shared namespace stack must already own/create namespace ${CYAN}uat${NC}"
+        echo -e "${YELLOW}Run first if needed:${NC} ./an-deploy dev eks-alb"
+    fi
+
     echo -e "${BLUE}Planning service: ${CYAN}${env}/${service}${NC}"
     check_remote_state_dependencies "$env" "$service" || return 1
     run_service_init "$env" "$service"
@@ -943,6 +1017,7 @@ run_init_command() {
                 return 1
             fi
             services=("${all_services[@]}")
+            validate_uat_blocked_services "$env" "${services[@]}" || return 1
             resolve_service_order "$env" ordered "${services[@]}"
 
             echo -e "${BLUE}Initializing all ${env_name} services...${NC}"
@@ -957,6 +1032,7 @@ run_init_command() {
         fi
     done
 
+    validate_uat_blocked_services "$env" "$@" || return 1
     validate_multi_service_args "$env" "${env}-init" "$MAX_MULTI_SERVICE" services "$@" || return 1
     resolve_service_order "$env" ordered "${services[@]}"
 
@@ -979,6 +1055,7 @@ run_plan_command() {
     local env_name
 
     env_name="$(env_upper "$env")"
+    validate_uat_blocked_services "$env" "$@" || return 1
     collect_env_targets "$env" "${env}-plan" targets "$@" || return 1
     resolve_service_order "$env" ordered "${targets[@]}"
     expand_deploy_targets "$env" ordered "${ordered[@]}"
@@ -1002,6 +1079,7 @@ run_apply_command() {
     local service
 
     env_name="$(env_upper "$env")"
+    validate_uat_blocked_services "$env" "$@" || return 1
     collect_env_targets "$env" "${env}-apply" targets "$@" || return 1
     resolve_service_order "$env" ordered "${targets[@]}"
     expand_deploy_targets "$env" ordered "${ordered[@]}"
@@ -1030,9 +1108,42 @@ run_apply_command() {
     echo -e "${GREEN}====== ${env_name} apply completed!${NC}"
 }
 
+parse_env_deploy_flags() {
+    local env="$1"
+    shift
+
+    DRY_RUN=0
+    cleaned_args=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            "-y")
+                AUTO_YES=1
+                ;;
+            "--dry-run")
+                DRY_RUN=1
+                ;;
+            -*)
+                echo -e "${RED}ERROR: Unsupported option for ./an-deploy ${env}: $1${NC}"
+                echo -e "${YELLOW}Usage: ./an-deploy ${env} <service1> [service2] | all [-y] [--dry-run]${NC}"
+                return 1
+                ;;
+            *)
+                cleaned_args+=("$1")
+                ;;
+        esac
+        shift
+    done
+}
+
 run_deploy_command() {
     local env="$1"
     shift
+
+    parse_env_deploy_flags "$env" "$@" || return 1
+    # Use cleaned_args instead of "$@" for service checks
+    set -- "${cleaned_args[@]}"
+
     local services=()
     local all_services=()
     local ordered=()
@@ -1050,7 +1161,7 @@ run_deploy_command() {
 
     if [[ $# -eq 0 ]]; then
         echo -e "${RED}ERROR: At least one service is required${NC}"
-        echo -e "${YELLOW}Usage: ./an-deploy ${env} <service1> [service2] | all${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy ${env} <service1> [service2] | all [-y] [--dry-run]${NC}"
         return 1
     fi
 
@@ -1058,18 +1169,35 @@ run_deploy_command() {
         if [[ "$arg" == "all" || "$arg" == "ALL" || "$arg" == "*" ]]; then
             if [[ $# -gt 1 ]]; then
                 echo -e "${RED}ERROR: 'all' selector must be used alone${NC}"
-                echo -e "${YELLOW}Usage: ./an-deploy ${env} <service1> [service2] | all${NC}"
+                echo -e "${YELLOW}Usage: ./an-deploy ${env} <service1> [service2] | all [-y] [--dry-run]${NC}"
                 return 1
             fi
             services=("${all_services[@]}")
+            validate_uat_blocked_services "$env" "${services[@]}" || return 1
             resolve_service_order "$env" ordered "${services[@]}"
             expand_deploy_targets "$env" ordered "${ordered[@]}"
+
+            if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+                echo -e "${BLUE}[DRY-RUN] Planning all ${env_name} services...${NC}"
+                echo -e "${YELLOW}Order:${NC} ${ordered[*]}"
+
+                if ! confirm_yes_no "Run plan for all ${env_name} services? (y/n): "; then
+                    echo -e "${YELLOW}Operation cancelled${NC}"
+                    return 1
+                fi
+
+                for service in "${ordered[@]}"; do
+                    run_service_plan "$env" "$service"
+                done
+
+                echo -e "${GREEN}====== ${env_name} dry-run completed!${NC}"
+                return 0
+            fi
 
             echo -e "${BLUE}Deploying all ${env_name} services...${NC}"
             echo -e "${YELLOW}Order:${NC} ${ordered[*]}"
 
-            read -r -p "Run plan + apply sequentially for all ${env_name} services? (y/n): " confirm
-            if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            if ! confirm_yes_no "Run plan + apply sequentially for all ${env_name} services? (y/n): "; then
                 echo -e "${YELLOW}Operation cancelled${NC}"
                 return 1
             fi
@@ -1084,16 +1212,34 @@ run_deploy_command() {
         fi
     done
 
+    validate_uat_blocked_services "$env" "$@" || return 1
     validate_multi_service_args "$env" "${env}" "$MAX_MULTI_SERVICE" services "$@" || return 1
     resolve_service_order "$env" ordered "${services[@]}"
     expand_deploy_targets "$env" ordered "${ordered[@]}"
+
+    if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+        echo -e "${BLUE}[DRY-RUN] Planning ${env_name} services...${NC}"
+        echo -e "${YELLOW}Services:${NC} ${services[*]}"
+        echo -e "${YELLOW}Order:${NC} ${ordered[*]}"
+
+        if ! confirm_yes_no "Run plan for selected ${env_name} services? (y/n): "; then
+            echo -e "${YELLOW}Operation cancelled${NC}"
+            return 1
+        fi
+
+        for service in "${ordered[@]}"; do
+            run_service_plan "$env" "$service"
+        done
+
+        echo -e "${GREEN}====== ${env_name} dry-run completed!${NC}"
+        return 0
+    fi
 
     echo -e "${BLUE}Deploying ${env_name} services...${NC}"
     echo -e "${YELLOW}Services:${NC} ${services[*]}"
     echo -e "${YELLOW}Order:${NC} ${ordered[*]}"
 
-    read -r -p "Run plan + apply sequentially for selected ${env_name} services? (y/n): " confirm
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+    if ! confirm_yes_no "Run plan + apply sequentially for selected ${env_name} services? (y/n): "; then
         echo -e "${YELLOW}Operation cancelled${NC}"
         return 1
     fi
@@ -1104,6 +1250,127 @@ run_deploy_command() {
     done
 
     echo -e "${GREEN}====== ${env_name} deploy completed!${NC}"
+}
+
+run_backend_init_dry_run_command() {
+    local bootstrap_dir="modules/bootstrap"
+    local dev_env="dev"
+    local uat_env="uat"
+    local -a dev_prereq_services=("networking" "ecr")
+    local service
+
+    if [[ ! -d "$bootstrap_dir" ]]; then
+        echo -e "${RED}ERROR: Bootstrap directory not found: $bootstrap_dir${NC}"
+        return 1
+    fi
+
+    validate_environment "$dev_env" || return 1
+    for service in "${dev_prereq_services[@]}"; do
+        validate_service "$dev_env" "$service" || return 1
+    done
+
+    echo -e "${BLUE}[DRY-RUN] Planning bootstrap backend...${NC}"
+    print_terraform_command "terraform -chdir=$bootstrap_dir init"
+    terraform -chdir="$bootstrap_dir" init
+    print_terraform_command "terraform -chdir=$bootstrap_dir validate"
+    terraform -chdir="$bootstrap_dir" validate
+    print_terraform_command "terraform -chdir=$bootstrap_dir plan"
+    terraform -chdir="$bootstrap_dir" plan
+    echo -e "${YELLOW}[DRY-RUN] Skipped bootstrap apply.${NC}"
+
+    echo -e "${BLUE}[DRY-RUN] Planning DEV prerequisites...${NC}"
+    for service in "${dev_prereq_services[@]}"; do
+        run_service_plan "$dev_env" "$service"
+    done
+
+    if [[ -d "$(service_dir "$uat_env" "ecr")" ]]; then
+        echo -e "${BLUE}[DRY-RUN] Planning UAT ECR prerequisites...${NC}"
+        run_service_plan "$uat_env" "ecr"
+    fi
+}
+
+run_deploy_dry_run_command() {
+    local env="$1"
+    shift
+    local services=()
+    local ordered=()
+    local env_name
+    local service
+
+    env_name="$(env_upper "$env")"
+    validate_uat_blocked_services "$env" "$@" || return 1
+    validate_multi_service_args "$env" "$env" "$MAX_MULTI_SERVICE" services "$@" || return 1
+    resolve_service_order "$env" ordered "${services[@]}"
+    expand_deploy_targets "$env" ordered "${ordered[@]}"
+
+    echo -e "${BLUE}[DRY-RUN] Planning ${env_name} services...${NC}"
+    echo -e "${YELLOW}Order:${NC} ${ordered[*]}"
+
+    for service in "${ordered[@]}"; do
+        run_service_plan "$env" "$service"
+    done
+}
+
+parse_global_deploy_all_flags() {
+    AUTO_YES=0
+    DRY_RUN=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            "-y")
+                AUTO_YES=1
+                ;;
+            "--dry-run")
+                DRY_RUN=1
+                ;;
+            *)
+                echo -e "${RED}ERROR: Unsupported option for ./an-deploy all: $1${NC}"
+                echo -e "${YELLOW}Usage: ./an-deploy all [-y] [--dry-run]${NC}"
+                return 1
+                ;;
+        esac
+        shift
+    done
+}
+
+run_global_deploy_all_command() {
+    parse_global_deploy_all_flags "$@" || return 1
+
+    validate_prerequisites || return 1
+    validate_environment "dev" || return 1
+    validate_environment "uat" || return 1
+
+    if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+        echo -e "${BLUE}Global deploy dry run for DEV and UAT.${NC}"
+        echo -e "${YELLOW}Mode:${NC} dry-run, auto-yes=${AUTO_YES}"
+    else
+        echo -e "${BLUE}This runs full DEV/UAT Terraform deploy flow.${NC}"
+        echo -e "${YELLOW}Mode:${NC} apply, auto-yes=${AUTO_YES}"
+    fi
+    echo -e "${YELLOW}Order:${NC} be-init -> dev eks eks-alb -> uat ecr -> dev secrets -> uat secrets"
+
+    if ! confirm_yes_no "Run ${GREEN}Full${NC} DEV/UAT Terraform deploy flow? (y/n): "; then
+        echo -e "${YELLOW}Operation cancelled${NC}"
+        return 1
+    fi
+
+    if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
+        run_backend_init_dry_run_command || return 1
+        run_deploy_dry_run_command "dev" "eks" "eks-alb" || return 1
+        run_deploy_dry_run_command "uat" "ecr" || return 1
+        run_deploy_dry_run_command "dev" "secrets" || return 1
+        run_deploy_dry_run_command "uat" "secrets" || return 1
+        echo -e "${GREEN}====== Global deploy dry run completed for DEV and UAT!${NC}"
+        return 0
+    fi
+
+    run_backend_init_command || return 1
+    run_deploy_command "dev" "eks" "eks-alb" || return 1
+    run_deploy_command "uat" "ecr" || return 1
+    run_deploy_command "dev" "secrets" || return 1
+    run_deploy_command "uat" "secrets" || return 1
+
+    echo -e "${GREEN}====== Global deploy completed for DEV and UAT!${NC}"
 }
 
 run_destroy_command() {
@@ -1152,6 +1419,7 @@ run_destroy_command() {
             fi
 
             services=("${all_services[@]}")
+            validate_uat_blocked_services "$env" "${services[@]}" || return 1
             resolve_service_order "$env" ordered "${services[@]}"
             reverse_services destroy_order "${ordered[@]}"
 
@@ -1188,6 +1456,7 @@ run_destroy_command() {
         fi
     done
 
+    validate_uat_blocked_services "$env" "$@" || return 1
     validate_multi_service_args "$env" "${env}-destroy" "$MAX_MULTI_SERVICE" services "$@" || return 1
     resolve_service_order "$env" ordered "${services[@]}"
     reverse_services destroy_order "${ordered[@]}"
@@ -1216,6 +1485,31 @@ run_destroy_command() {
     fi
 
     echo -e "${GREEN}====== ${env_name} destroy completed!${NC}"
+}
+
+run_global_destroy_all_command() {
+    if [[ $# -ne 1 || "$1" != "all" ]]; then
+        echo -e "${RED}ERROR: Command requires exactly: ./an-deploy destroy all${NC}"
+        return 1
+    fi
+
+    validate_prerequisites || return 1
+    validate_environment "uat" || return 1
+    validate_environment "dev" || return 1
+
+    echo -e "${RED}This destroys all Terraform-managed resources for UAT and DEV.${NC}"
+    echo -e "${YELLOW}Order:${NC} Deleting UAT then DEV."
+    echo -e "${YELLOW}Existing per-env destroy flows may ask typed confirmation and bootstrap cleanup questions.${NC}"
+    read -r -p "Proceed? (y/n): " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}Operation cancelled${NC}"
+        return 1
+    fi
+
+    run_destroy_command "uat" "all" || return 1
+    run_destroy_command "dev" "all" || return 1
+
+    echo -e "${GREEN}====== Global destroy completed for UAT and DEV!${NC}"
 }
 
 run_show_service_plan_command() {
@@ -1251,40 +1545,62 @@ print_available_services() {
 }
 
 show_help() {
-    echo -e "${BLUE}an-deploy - Terraform Management Script for DEV${NC}"
+    echo -e "${BLUE}an-deploy - Terraform Management Script for DEV & UAT${NC}"
     echo ""
     echo -e "${YELLOW}Usage:${NC}"
-    echo "  ./an-deploy <command> [service|all|bootstrap]"
+    echo "  ./an-deploy <command> [service|all|bootstrap] [flags]"
+    echo ""
+    echo -e "${YELLOW}Global Commands:${NC}"
+    echo -e "  ${GREEN}all [-y] [--dry-run]${NC} - Deploy full DEV/UAT flow (bootstrap, dev eks eks-alb, uat ecr, dev secrets, uat secrets)"
+    echo -e "  ${GREEN}destroy all${NC} - Destroy all UAT and DEV resources"
     echo ""
     echo -e "${YELLOW}Bootstrap Commands:${NC}"
-    echo -e "  ${GREEN}be-init${NC} - Bootstrap backend bucket, then deploy DEV prerequisites (networking, ecr)"
+    echo -e "  ${GREEN}be-init${NC} - Bootstrap backend bucket, then deploy DEV prerequisites (networking, ecr). Optionally deploys UAT ECR."
     echo ""
     echo -e "${YELLOW}Environment Commands:${NC}"
     echo -e "  ${GREEN}dev-init${NC}     <s1> [s2]|all - Init DEV (all services or one service)"
     echo -e "  ${GREEN}dev-validate${NC} <s1> [s2]|all - Validate DEV (all services or one service)"
     echo -e "  ${GREEN}dev-plan${NC}     <s1> [s2]|all - Plan DEV (all services or one service)"
     echo -e "  ${GREEN}dev-apply${NC}    <s1> [s2]|all - Apply DEV (all services or one service)"
+    echo -e "  ${GREEN}uat-init${NC}     <s1> [s2]|all - Init UAT (allowed services only)"
+    echo -e "  ${GREEN}uat-validate${NC} <s1> [s2]|all - Validate UAT (allowed services only)"
+    echo -e "  ${GREEN}uat-plan${NC}     <s1> [s2]|all - Plan UAT (allowed services only)"
+    echo -e "  ${GREEN}uat-apply${NC}    <s1> [s2]|all - Apply UAT (allowed services only)"
     echo ""
     echo -e "${YELLOW}Service Commands (max 2 services for deploy/destroy):${NC}"
-    echo -e "  ${GREEN}dev${NC}          <s1> [s2]|all - Plan + apply selected DEV service(s), or all"
+    echo -e "  ${GREEN}dev${NC}          <s1> [s2]|all [-y] [--dry-run] - Plan + apply selected DEV service(s), or all; --dry-run plans only"
     echo -e "  ${GREEN}dev-destroy${NC}  - Destroy selected DEV service(s), all, or bootstrap"
     echo -e "  ${GREEN}dev-svc-plan${NC} <service> - Show saved DEV service plan"
+    echo -e "  ${GREEN}uat${NC}          <s1> [s2]|all [-y] [--dry-run] - Plan + apply selected UAT service(s), or all; --dry-run plans only"
+    echo -e "  ${GREEN}uat-destroy${NC}  - Destroy selected UAT service(s), all, or bootstrap"
+    echo -e "  ${GREEN}uat-svc-plan${NC} <service> - Show saved UAT service plan"
     echo ""
     echo -e "${YELLOW}Note:${NC} selecting dev/eks also runs dev/eks-post (post-cluster Kubernetes objects)."
-    echo ""
-    echo -e "${YELLOW}Secret Retrieval:${NC}"
-    echo -e "  ${GREEN}dev-pass${NC} mongodb - Print runtime MongoDB secrets from dev cluster"
+    echo -e "${YELLOW}Note:${NC} UAT shares EKS/ALB with DEV. Blocked: networking, eks, eks-alb, eks-post."
+    echo -e "${YELLOW}Note:${NC} global destroy all runs UAT first, then DEV."
+    echo -e "${YELLOW}Note:${NC} global all deploy order: be-init -> dev eks eks-alb -> dev secrets -> uat secrets."
+    echo -e "${YELLOW}Note:${NC} -y auto-answers script-owned (y/n) prompts. Does not bypass typed destructive confirmations."
+    echo -e "${YELLOW}Note:${NC} --dry-run runs real Terraform init/validate/plan but never applies."
     echo ""
     echo -e "${YELLOW}Runtime Info Retrieval:${NC}"
     echo -e "  ${GREEN}dev-get${NC} elb - Print AWS Load Balancer DNS name for dev app ALB"
+    echo -e "  ${GREEN}dev-get${NC} mongodb - Print runtime MongoDB secrets from dev cluster"
+    echo -e "  ${GREEN}uat-get${NC} elb - Print AWS Load Balancer DNS name (shared with dev)"
+    echo -e "  ${GREEN}uat-get${NC} mongodb - Print runtime MongoDB secrets from uat cluster"
     echo ""
     echo -e "${YELLOW}Help:${NC}"
     echo -e "  ${GREEN}--help${NC}   - Show global help"
     echo -e "  ${GREEN}dev-help${NC} - Show DEV environment help"
+    echo -e "  ${GREEN}uat-help${NC} - Show UAT environment help"
     print_available_services
     echo ""
     echo -e "${YELLOW}Examples:${NC}"
     echo "  ./an-deploy be-init"
+    echo "  ./an-deploy all"
+    echo "  ./an-deploy all -y"
+    echo "  ./an-deploy all --dry-run"
+    echo "  ./an-deploy all -y --dry-run"
+    echo "  ./an-deploy destroy all"
     echo "  ./an-deploy dev-destroy bootstrap"
     echo "  ./an-deploy dev-validate"
     echo "  ./an-deploy dev-validate all"
@@ -1293,10 +1609,20 @@ show_help() {
     echo "  ./an-deploy dev-apply all"
     echo "  ./an-deploy dev-svc-plan eks"
     echo "  ./an-deploy dev eks eks-alb"
+    echo "  ./an-deploy dev all -y --dry-run"
+    echo "  ./an-deploy dev networking --dry-run"
     echo "  ./an-deploy dev-destroy all"
     echo "  ./an-deploy dev-get elb"
+    echo "  ./an-deploy dev-get mongodb"
+    echo "  ./an-deploy uat-plan secrets"
+    echo "  ./an-deploy uat-plan ecr"
+    echo "  ./an-deploy uat-apply all"
+    echo "  ./an-deploy uat all --dry-run"
+    echo "  ./an-deploy uat all -y --dry-run"
+    echo "  ./an-deploy uat-get elb"
+    echo "  ./an-deploy uat-get mongodb"
     echo ""
-    echo -e "${YELLOW}Note:${NC} For init/validate/plan/apply/deploy/destroy, ${CYAN}all${NC} must be used alone; ${CYAN}bootstrap${NC} is supported only for dev-destroy and must be used alone."
+    echo -e "${YELLOW}Note:${NC} For init/validate/plan/apply/deploy/destroy, ${CYAN}all${NC} must be used alone among service selectors; deploy flags ${CYAN}-y${NC} and ${CYAN}--dry-run${NC} are allowed. ${CYAN}bootstrap${NC} is supported only for dev-destroy and must be used alone."
 }
 
 show_env_help() {
@@ -1310,20 +1636,28 @@ show_env_help() {
     echo -e "${BLUE}an-deploy - ${env_name} Environment Commands${NC}"
     echo ""
     echo -e "${YELLOW}Usage:${NC}"
-    echo "  ./an-deploy <command> [service|all|bootstrap]"
+    echo "  ./an-deploy <command> [service|all|bootstrap] [flags]"
     echo ""
     echo -e "${YELLOW}Commands:${NC}"
     echo -e "  ${GREEN}${env}-init${NC}     <s1> [s2]|all - Init ${env_name} (all services or one service)"
     echo -e "  ${GREEN}${env}-validate${NC} <s1> [s2]|all - Validate ${env_name} (all services or one service)"
     echo -e "  ${GREEN}${env}-plan${NC}     <s1> [s2]|all - Plan ${env_name} (all services or one service)"
     echo -e "  ${GREEN}${env}-apply${NC}    <s1> [s2]|all - Apply ${env_name} (all services or one service)"
-    echo -e "  ${GREEN}${env}${NC} <s1> [s2]|all  - Plan + apply selected service(s), or all"
+    echo -e "  ${GREEN}${env}${NC} <s1> [s2]|all [-y] [--dry-run] - Plan + apply selected service(s), or all; --dry-run plans only"
     echo -e "  ${GREEN}${env}-destroy${NC} <s1> [s2]|all|bootstrap - Destroy selected service(s), all, or bootstrap"
     echo -e "  ${GREEN}${env}-svc-plan${NC} <s>           - Show saved service plan"
-    echo -e "  ${GREEN}${env}-pass${NC} mongodb            - Print runtime MongoDB secrets from dev cluster"
     echo -e "  ${GREEN}${env}-get${NC} elb               - Print AWS Load Balancer DNS name"
+    echo -e "  ${GREEN}${env}-get${NC} mongodb           - Print runtime MongoDB secrets from ${env} cluster"
+    if [[ "$env" == "uat" ]]; then
+        echo ""
+        echo -e "${YELLOW}UAT Notes:${NC}"
+        echo -e "  - UAT shares EKS cluster and ALB with DEV."
+        echo -e "  - Blocked services: networking, eks, eks-alb, eks-post"
+        echo -e "  - Allowed services: ecr, secrets"
+        echo -e "  - ${env}-get elb returns same DNS as dev (shared ALB)"
+    fi
     echo ""
-    echo -e "${YELLOW}Note:${NC} ${CYAN}all${NC} must be used alone for init/validate/plan/apply/deploy/destroy; ${CYAN}bootstrap${NC} is supported only for ${env}-destroy and must be used alone."
+    echo -e "${YELLOW}Note:${NC} ${CYAN}all${NC} must be used alone among service selectors for init/validate/plan/apply/deploy/destroy. For deploy, flags ${CYAN}-y${NC} and ${CYAN}--dry-run${NC} are allowed. ${CYAN}bootstrap${NC} is supported only for ${env}-destroy and must be used alone."
     echo ""
 
     if [[ ${#services[@]} -gt 0 ]]; then
@@ -1338,7 +1672,7 @@ show_dev_help() {
 }
 
 # ========================================
-# Dev Pass (Secret Retrieval) Functions
+# Runtime Secret Retrieval Functions
 # ========================================
 fetch_k8s_secret_field() {
     local label="$1"
@@ -1366,41 +1700,17 @@ fetch_k8s_secret_field() {
     echo -e "${GREEN}${label}:${NC} ${decoded}"
 }
 
-run_dev_pass_command() {
-    local target="${1:-}"
-    shift || true
+print_mongodb_runtime_secrets_for_env() {
+    local env="$1"
+    local env_name
 
-    if [[ -z "$target" ]]; then
-        echo -e "${RED}ERROR: Missing required argument${NC}"
-        echo -e "${YELLOW}Usage: ./an-deploy dev-pass mongodb${NC}"
-        return 1
-    fi
-
-    if [[ $# -gt 0 ]]; then
-        echo -e "${RED}ERROR: Too many arguments${NC}"
-        echo -e "${YELLOW}Usage: ./an-deploy dev-pass mongodb${NC}"
-        return 1
-    fi
-
-    if [[ "$target" != "mongodb" ]]; then
-        echo -e "${RED}ERROR: Unsupported target '${target}'${NC}"
-        echo -e "${YELLOW}Supported: mongodb${NC}"
-        return 1
-    fi
-
-    validate_environment "dev" || return 1
-
-    command -v kubectl >/dev/null 2>&1 || {
-        echo -e "${RED}ERROR: kubectl not installed${NC}"
-        return 1
-    }
-
-    echo -e "${BLUE}Retrieving runtime MongoDB secrets from dev cluster...${NC}"
+    env_name="$(env_upper "$env")"
+    echo -e "${BLUE}Retrieving runtime MongoDB secrets from ${env} cluster...${NC}"
     echo ""
-
-    fetch_k8s_secret_field "App Password" "mongo-app-secret" "MONGO_APP_PASSWORD" "dev" || return 1
-    fetch_k8s_secret_field "Root Password" "mongo-root-secret" "MONGO_INITDB_ROOT_PASSWORD" "dev" || return 1
-    fetch_k8s_secret_field "MongoDB URI" "mongo-app-secret" "MONGODB_URI" "dev" || return 1
+    echo -e "${BLUE}${env_name}:${NC}"
+    fetch_k8s_secret_field "App Password" "mongo-app-secret" "MONGO_APP_PASSWORD" "$env" || return 1
+    fetch_k8s_secret_field "Root Password" "mongo-root-secret" "MONGO_INITDB_ROOT_PASSWORD" "$env" || return 1
+    fetch_k8s_secret_field "MongoDB URI" "mongo-app-secret" "MONGODB_URI" "$env" || return 1
 }
 
 # ========================================
@@ -1440,24 +1750,80 @@ run_dev_get_command() {
 
     if [[ -z "$target" ]]; then
         echo -e "${RED}ERROR: Missing required argument${NC}"
-        echo -e "${YELLOW}Usage: ./an-deploy dev-get elb${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy dev-get <elb|mongodb>${NC}"
         return 1
     fi
 
     if [[ $# -gt 0 ]]; then
         echo -e "${RED}ERROR: Too many arguments${NC}"
-        echo -e "${YELLOW}Usage: ./an-deploy dev-get elb${NC}"
-        return 1
-    fi
-
-    if [[ "$target" != "elb" ]]; then
-        echo -e "${RED}ERROR: Unsupported target '${target}'${NC}"
-        echo -e "${YELLOW}Supported: elb${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy dev-get <elb|mongodb>${NC}"
         return 1
     fi
 
     validate_environment "dev" || return 1
-    fetch_elb_dns_name "us-east-1" "demo-react-eks-dev"
+
+    case "$target" in
+        "elb")
+            fetch_elb_dns_name "us-east-1" "demo-react-eks-dev-uat"
+            ;;
+        "mongodb")
+            command -v kubectl >/dev/null 2>&1 || {
+                echo -e "${RED}ERROR: kubectl not installed${NC}"
+                return 1
+            }
+            print_mongodb_runtime_secrets_for_env "dev"
+            ;;
+        *)
+            echo -e "${RED}ERROR: Unsupported target '${target}'${NC}"
+            echo -e "${YELLOW}Supported: elb, mongodb${NC}"
+            return 1
+            ;;
+    esac
+}
+
+# ========================================
+# UAT Get (Runtime Info Retrieval) Functions
+# ========================================
+run_uat_get_command() {
+    local target="${1:-}"
+    shift || true
+
+    if [[ -z "$target" ]]; then
+        echo -e "${RED}ERROR: Missing required argument${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy uat-get <elb|mongodb>${NC}"
+        return 1
+    fi
+
+    if [[ $# -gt 0 ]]; then
+        echo -e "${RED}ERROR: Too many arguments${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy uat-get <elb|mongodb>${NC}"
+        return 1
+    fi
+
+    validate_environment "uat" || return 1
+
+    case "$target" in
+        "elb")
+            echo -e "${YELLOW}Note: UAT shares ELB with DEV. Name: demo-react-eks-dev-uat${NC}"
+            fetch_elb_dns_name "us-east-1" "demo-react-eks-dev-uat"
+            ;;
+        "mongodb")
+            command -v kubectl >/dev/null 2>&1 || {
+                echo -e "${RED}ERROR: kubectl not installed${NC}"
+                return 1
+            }
+            print_mongodb_runtime_secrets_for_env "uat"
+            ;;
+        *)
+            echo -e "${RED}ERROR: Unsupported target '${target}'${NC}"
+            echo -e "${YELLOW}Supported: elb, mongodb${NC}"
+            return 1
+            ;;
+    esac
+}
+
+show_uat_help() {
+    show_env_help "uat"
 }
 
 # ========================================
@@ -1507,11 +1873,55 @@ main() {
             validate_environment "dev" || exit 1
             run_show_service_plan_command "dev" "$@"
             ;;
-        "dev-pass")
-            run_dev_pass_command "$@"
-            ;;
         "dev-get")
             run_dev_get_command "$@"
+            ;;
+
+        "uat-init")
+            validate_prerequisites || exit 1
+            validate_environment "uat" || exit 1
+            run_init_command "uat" "$@"
+            ;;
+        "uat-validate")
+            validate_prerequisites || exit 1
+            validate_environment "uat" || exit 1
+            run_validate_command "uat" "$@"
+            ;;
+        "uat-plan")
+            validate_prerequisites || exit 1
+            validate_environment "uat" || exit 1
+            run_plan_command "uat" "$@"
+            ;;
+        "uat-apply")
+            validate_prerequisites || exit 1
+            validate_environment "uat" || exit 1
+            run_apply_command "uat" "$@"
+            ;;
+        "uat")
+            validate_prerequisites || exit 1
+            validate_environment "uat" || exit 1
+            run_deploy_command "uat" "$@"
+            ;;
+        "uat-destroy")
+            validate_prerequisites || exit 1
+            validate_environment "uat" || exit 1
+            run_destroy_command "uat" "$@"
+            ;;
+        "uat-svc-plan")
+            validate_prerequisites || exit 1
+            validate_environment "uat" || exit 1
+            run_show_service_plan_command "uat" "$@"
+            ;;
+        "uat-get")
+            run_uat_get_command "$@"
+            ;;
+
+        "all")
+            run_global_deploy_all_command "$@"
+            ;;
+
+        "destroy")
+            run_global_destroy_all_command "$@"
             ;;
 
         "--help"|"")
@@ -1525,6 +1935,10 @@ main() {
         "dev-help")
             validate_no_args "dev-help" "$@" || exit 1
             show_dev_help
+            ;;
+        "uat-help")
+            validate_no_args "uat-help" "$@" || exit 1
+            show_uat_help
             ;;
 
         *)

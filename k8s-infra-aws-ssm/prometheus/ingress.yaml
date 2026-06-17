@@ -6,6 +6,9 @@ metadata:
   annotations:
     alb.ingress.kubernetes.io/group.name: demo-react-eks-dev
     alb.ingress.kubernetes.io/group.order: "3"
+    alb.ingress.kubernetes.io/load-balancer-name: demo-react-eks-dev-uat
+    alb.ingress.kubernetes.io/subnets: subnet-0ca21f0f484edd27d,subnet-0d5b19984b533f703
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:654654604308:certificate/ed9119c0-c6a7-49ac-84cf-ded38b29491c
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/healthcheck-path: /-/healthy
@@ -15,7 +18,8 @@ metadata:
     alb.ingress.kubernetes.io/unhealthy-threshold-count: "2"
     alb.ingress.kubernetes.io/success-codes: "200"
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
-    alb.ingress.kubernetes.io/tags: Project=demo-eks-dev,Environment=dev,ManagedBy=kubernetes,Name=demo-eks-dev-alb
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/tags: Project=demo-eks-dev,Environment=shared,ManagedBy=kubernetes,Name=demo-react-eks-dev-uat
     alb.ingress.kubernetes.io/security-groups: PLACEHOLDER_FRONTEND_SG,PLACEHOLDER_BACKEND_SG
     alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
 spec:

@@ -17,6 +17,15 @@ spec:
       labels:
         app: prometheus
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: topology.kubernetes.io/zone
+                    operator: In
+                    values:
+                      - us-east-1a
       serviceAccountName: prometheus
       securityContext:
         runAsUser: 65534
@@ -35,7 +44,7 @@ spec:
               mountPath: /prometheus
       containers:
         - name: prometheus
-          image: prom/prometheus:v3.5.0
+          image: prom/prometheus:v3.5.1
           args:
             - --config.file=/etc/prometheus/prometheus.yml
             - --storage.tsdb.path=/prometheus
@@ -62,7 +71,7 @@ spec:
               mountPath: /prometheus
               subPath: prometheus
         - name: nginx
-          image: nginx:1.27.5-alpine
+          image: nginx:1.29-alpine
           ports:
             - containerPort: 8080
           volumeMounts:

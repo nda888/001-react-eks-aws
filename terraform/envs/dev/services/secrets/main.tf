@@ -82,8 +82,9 @@ locals {
     Service     = "secrets"
   }
 
-  ssm_parameter_arn_prefix                  = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_prefix}/*"
-  grafana_image_render_ssm_parameter_prefix = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.grafana_image_render_ssm_prefix}/*"
+  ssm_parameter_arn_prefix                      = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_prefix}/*"
+  grafana_image_render_ssm_parameter_arn_prefix = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.grafana_image_render_ssm_prefix}/*"
+  monitoring_ssm_parameter_arn_prefix           = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.monitoring_ssm_prefix}/*"
 
   oidc_provider_url = data.terraform_remote_state.eks.outputs.oidc_provider_url
   oidc_provider_arn = data.terraform_remote_state.eks.outputs.oidc_provider_arn
@@ -94,10 +95,6 @@ locals {
     app_username    = "${var.ssm_prefix}/app_username"
     app_password    = "${var.ssm_prefix}/app_password"
     app_mongodb_uri = "${var.ssm_prefix}/app_mongodb_uri"
-  }
-
-  grafana_image_renderer_ssm_parameters = {
-    auth_token = "${var.grafana_image_render_ssm_prefix}/grafana_image_render_auth_token"
   }
 }
 
@@ -170,7 +167,8 @@ data "aws_iam_policy_document" "eso_ssm_read" {
     ]
     resources = [
       local.ssm_parameter_arn_prefix,
-      local.grafana_image_render_ssm_parameter_prefix,
+      local.grafana_image_render_ssm_parameter_arn_prefix,
+      local.monitoring_ssm_parameter_arn_prefix,
     ]
   }
 }
@@ -318,7 +316,7 @@ resource "random_password" "mongo_app" {
   special = false
 }
 
-resource "random_password" "grafana_image_renderer" {
+resource "random_password" "grafana_image_render" {
   length  = 32
   special = false
 }
@@ -358,9 +356,25 @@ resource "aws_ssm_parameter" "mongo_app_mongodb_uri" {
   tags  = local.common_tags
 }
 
-resource "aws_ssm_parameter" "grafana_image_renderer_auth_token" {
-  name  = local.grafana_image_renderer_ssm_parameters.auth_token
+resource "aws_ssm_parameter" "grafana_image_render_auth_token" {
+  name  = "${var.grafana_image_render_ssm_prefix}/grafana_image_render_auth_token"
   type  = "SecureString"
-  value = random_password.grafana_image_renderer.result
+  value = random_password.grafana_image_render.result
+  tags  = local.common_tags
+}
+
+# ---------------------------------------------------------------------------
+# Initial Prometheus basic-auth SSM SecureString parameter
+# ---------------------------------------------------------------------------
+
+resource "random_password" "prometheus_basic_auth" {
+  length  = 32
+  special = false
+}
+
+resource "aws_ssm_parameter" "prometheus_basic_auth" {
+  name  = "${var.monitoring_ssm_prefix}/prometheus_basic_auth"
+  type  = "SecureString"
+  value = "${var.prometheus_basic_auth_username}:${random_password.prometheus_basic_auth.result}"
   tags  = local.common_tags
 }

@@ -184,6 +184,82 @@ is_resource_absent() {
   grep -qiE 'NotFound|NoSuch|does not exist|InvalidAllocationID|InvalidGroup\.NotFound|NoSuchBucket|InvalidVolume\.NotFound|InvalidSnapshot\.NotFound|ResourceNotFoundException' <<<"$error_text"
 }
 
+is_target_group_delete_retryable() {
+  local error_text="$1"
+  grep -qiE 'ResourceInUse|in use|dependency|currently associated|currently in use' <<<"$error_text"
+}
+
+first_error_line() {
+  local error_text="$1"
+  grep -m 1 -E '[^[:space:]]' <<<"$error_text" | sed 's/^[[:space:]]*//'
+}
+
+print_target_group_delete_failure() {
+  local error_text="$1"
+  local reason
+  reason="$(first_error_line "$error_text")"
+  if [[ -n "$reason" ]]; then
+    echo -e "${RED}FAIL${NC} ($reason)"
+  else
+    echo -e "${RED}FAIL${NC}"
+  fi
+}
+
+get_target_group_load_balancer_arns() {
+  local arn="$1"
+  aws elbv2 describe-target-groups --region "$AWS_REGION" \
+    --target-group-arns "$arn" \
+    --query 'TargetGroups[0].LoadBalancerArns' --output text 2>&1
+}
+
+wait_target_group_detached() {
+  local arn="$1"
+  local attempt refs
+
+  for attempt in {1..6}; do
+    refs="$(get_target_group_load_balancer_arns "$arn")"
+    if is_resource_absent "$refs"; then
+      return 0
+    fi
+    if [[ -z "$refs" || "$refs" == "None" ]]; then
+      return 0
+    fi
+    [[ $attempt -lt 6 ]] && sleep 10
+  done
+
+  log_error "target group still reports load balancer refs before delete: $arn refs=$refs"
+  return 1
+}
+
+# ELBv2 can release target group dependencies after the load balancer waiter completes.
+delete_target_group_with_retry() {
+  local arn="$1"
+  local attempt err_file error_text
+
+  for attempt in {1..6}; do
+    err_file="$(mktemp)"
+    if aws elbv2 delete-target-group --target-group-arn "$arn" --region "$AWS_REGION" 2>"$err_file"; then
+      rm -f "$err_file"
+      return 0
+    fi
+
+    error_text="$(cat "$err_file")"
+    cat "$err_file" >> "$LOG_FILE"
+    rm -f "$err_file"
+
+    if is_resource_absent "$error_text"; then
+      return 2
+    fi
+    if is_target_group_delete_retryable "$error_text" && [[ $attempt -lt 6 ]]; then
+      sleep 10
+      continue
+    fi
+
+    TARGET_GROUP_DELETE_LAST_ERROR="$error_text"
+    return 1
+  done
+}
+
 print_processed_summary() {
   echo "Processed:"
   echo "  Services checked: ${SERVICES_CHECKED}"
@@ -667,11 +743,24 @@ check_ecr_repos() {
 }
 
 
+# Collect ARNs of project-related target groups created by AWS Load Balancer Controller.
+# Target group names encode the Kubernetes namespace, so we include:
+#   k8s-dev-*     (dev namespace services)
+#   k8s-uat-*     (uat namespace services)
+#   k8s-monitor-* (monitoring namespace services: grafana, prometheus, etc.)
+collect_target_group_arns() {
+  aws elbv2 describe-target-groups --region "$AWS_REGION" \
+    --query 'TargetGroups[?starts_with(TargetGroupName, `k8s-dev-`) || starts_with(TargetGroupName, `k8s-uat-`) || starts_with(TargetGroupName, `k8s-monitor-`)].TargetGroupArn' \
+    --output text 2>/dev/null
+}
+
 check_target_groups() {
   local tg_output rc
   printf "Checking Target Groups (region: %s) ... " "$AWS_REGION"
+  # AWS Load Balancer Controller target group names encode the Kubernetes namespace.
+  # Include k8s-dev-* (dev), k8s-uat-* (uat), and k8s-monitor-* (monitoring services: grafana, prometheus, etc.)
   tg_output="$(aws elbv2 describe-target-groups --region "$AWS_REGION" \
-    --query 'TargetGroups[?starts_with(TargetGroupName, `k8s-dev-`)].{Name:TargetGroupName,Type:TargetType,VpcId:VpcId,Protocol:Protocol}' \
+    --query 'TargetGroups[?starts_with(TargetGroupName, `k8s-dev-`) || starts_with(TargetGroupName, `k8s-uat-`) || starts_with(TargetGroupName, `k8s-monitor-`)].{Name:TargetGroupName,Type:TargetType,VpcId:VpcId,Protocol:Protocol}' \
     --output table 2>&1)" && rc=0 || rc=$?
   [[ $rc -ne 0 ]] && { echo -e "${YELLOW}WARN${NC} (TG lookup failed)"; return 0; }
   if grep -q '|' <<<"$tg_output"; then
@@ -1717,29 +1806,29 @@ delete_eks_clusters() {
 
 delete_target_groups() {
   local tg_arns
-  tg_arns="$(aws elbv2 describe-target-groups --region "$AWS_REGION" \
-    --query 'TargetGroups[?starts_with(TargetGroupName, `k8s-dev-`)].TargetGroupArn' \
-    --output text 2>/dev/null)"
+  tg_arns="$(collect_target_group_arns || true)"
   [[ -z "$tg_arns" || "$tg_arns" == "None" ]] && return 0
   echo "Deleting Target Groups..."
   [[ "$DRY_RUN" -eq 1 ]] && { echo -e "${CYAN}DRY-RUN${NC}"; return 0; }
-  local arn rc=0 err_file
+  local arn rc=0 tg_name delete_rc
   for arn in $tg_arns; do
-    echo -n "  $arn ... "
-    err_file="$(mktemp)"
-    if aws elbv2 delete-target-group --target-group-arn "$arn" --region "$AWS_REGION" 2>"$err_file"; then
+    tg_name="$(aws elbv2 describe-target-groups --region "$AWS_REGION" \
+      --target-group-arns "$arn" \
+      --query 'TargetGroups[0].TargetGroupName' --output text 2>/dev/null || echo "$arn")"
+    echo -n "  $tg_name ($arn) ... "
+    wait_target_group_detached "$arn" || true
+    TARGET_GROUP_DELETE_LAST_ERROR=""
+    delete_target_group_with_retry "$arn"
+    delete_rc=$?
+    if [[ $delete_rc -eq 0 ]]; then
       echo -e "${GREEN}OK${NC}"
+    elif [[ $delete_rc -eq 2 ]]; then
+      echo -e "${GREEN}OK${NC} (already absent)"
     else
-      cat "$err_file" >> "$LOG_FILE"
-      if is_resource_absent "$(cat "$err_file")"; then
-        echo -e "${GREEN}OK${NC} (already absent)"
-      else
-        echo -e "${RED}FAIL${NC}"
-        log_error "delete-target-group failed for $arn"
-        rc=1
-      fi
+      print_target_group_delete_failure "$TARGET_GROUP_DELETE_LAST_ERROR"
+      log_error "delete-target-group failed for $arn"
+      rc=1
     fi
-    rm -f "$err_file"
   done
   return $rc
 }

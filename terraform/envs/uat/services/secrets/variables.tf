@@ -1,0 +1,89 @@
+variable "aws_region" {
+  description = "AWS region"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "state_bucket" {
+  description = "S3 bucket name for Terraform remote state"
+  type        = string
+  default     = "demo-react-express-s3"
+}
+
+variable "cluster_name" {
+  description = "Naming prefix for UAT IAM and SSM resources on shared EKS"
+  type        = string
+  default     = "demo-eks-dev"
+}
+
+variable "environment" {
+  description = "Deployment environment"
+  type        = string
+  default     = "dev"
+}
+
+variable "namespace" {
+  description = "Application namespace"
+  type        = string
+  default     = "dev"
+}
+
+variable "external_secrets_namespace" {
+  description = "External Secrets Operator namespace"
+  type        = string
+  default     = "external-secrets"
+}
+
+variable "ssm_prefix" {
+  description = "SSM parameter prefix for Mongo secrets"
+  type        = string
+  default     = "/demo-eks-dev/mongo"
+}
+
+variable "grafana_image_render_ssm_prefix" {
+  description = "SSM parameter prefix for Grafana image renderer secrets"
+  type        = string
+  default     = "/demo-eks-dev/image-render"
+}
+
+variable "shared_external_secrets_role_name" {
+  description = "Existing External Secrets Operator IAM role used by the shared ClusterSecretStore"
+  type        = string
+  default     = "demo-eks-dev-external-secrets-role"
+}
+
+variable "mongo_root_username" {
+  description = "Initial MongoDB root username stored in SSM"
+  type        = string
+  default     = "admin"
+}
+
+variable "mongo_app_username" {
+  description = "Initial MongoDB application username stored in SSM"
+  type        = string
+  default     = "app_user"
+}
+
+variable "mongo_database_name" {
+  description = "MongoDB application database name"
+  type        = string
+  default     = "be_db"
+}
+
+variable "mongo_host" {
+  description = "MongoDB in-cluster host and port used in app connection URI"
+  type        = string
+  default     = "mongo:27017"
+}
+
+variable "monitoring_ssm_prefix" {
+  description = "SSM parameter prefix for monitoring secrets (Prometheus basic-auth)"
+  type        = string
+  default     = "/demo-eks-uat/monitoring"
+}
+
+variable "prometheus_basic_auth_username" {
+  description = "Username for Prometheus basic-auth ingress (no secret)"
+  type        = string
+  default     = "admin"
+}

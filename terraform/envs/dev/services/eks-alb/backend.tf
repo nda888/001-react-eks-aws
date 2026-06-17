@@ -1,7 +1,9 @@
 terraform {
   backend "s3" {
+    bucket       = "demo-react-express-s3"
+    key          = "dev/services/eks-alb/terraform.tfstate"
     region       = "us-east-1"
-    encrypt      = true
     use_lockfile = true
+    encrypt      = true
   }
 }

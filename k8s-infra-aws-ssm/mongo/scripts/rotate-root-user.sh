@@ -1,34 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-# --- Install tools if missing ---
-if ! command -v aws >/dev/null 2>&1; then
-  echo "[rotate-root] Installing aws-cli..."
-  apt-get update -qq -y >/dev/null 2>&1
-  apt-get install -qq -y curl unzip >/dev/null 2>&1
-  ARCH=$(uname -m)
-  if [ "$ARCH" = "aarch64" ]; then
-    AWS_ARCH="aarch64"
-  else
-    AWS_ARCH="x86_64"
-  fi
-  curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-${AWS_ARCH}.zip" -o /tmp/awscliv2.zip
-  unzip -q /tmp/awscliv2.zip -d /tmp
-  /tmp/aws/install
-  rm -rf /tmp/awscliv2.zip /tmp/aws
-fi
-
-if ! command -v kubectl >/dev/null 2>&1; then
-  echo "[rotate-root] Installing kubectl..."
-  ARCH=$(uname -m)
-  if [ "$ARCH" = "aarch64" ]; then
-    K8S_ARCH="arm64"
-  else
-    K8S_ARCH="amd64"
-  fi
-  curl -sSL "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/${K8S_ARCH}/kubectl" -o /usr/local/bin/kubectl
-  chmod +x /usr/local/bin/kubectl
-fi
+# Tools (aws, kubectl, mongosh) are pre-installed in the rotator image.
+# See k8s-infra-aws-ssm/mongo/scripts/Dockerfile.rotator for pinned versions + sha256 verification.
 
 # --- Constants ---
 SSM_PREFIX="${SSM_PREFIX:-/demo-eks-dev/mongo}"
@@ -41,6 +15,8 @@ OLD_PASSWORD="${MONGO_INITDB_ROOT_PASSWORD}"
 NEW_PASSWORD="$(openssl rand -base64 32 | tr -dc 'a-zA-Z0-9' | head -c 32)"
 
 echo "[rotate-root] Starting Mongo root password rotation"
+
+echo "[rotate-root] Generated new password for root user (length=${#NEW_PASSWORD})"
 
 # --- Preflight: verify app-user rotation is not still running ---
 ACTIVE_APP_ROTATION_JOBS="$(kubectl -n "${NAMESPACE}" get jobs \

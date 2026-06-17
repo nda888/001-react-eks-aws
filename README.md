@@ -1,35 +1,27 @@
-<p align="center">
-  <img src="img/react.png" alt="React Note App" />
-</p>
+```mermaid
+flowchart LR
+  FE["frontend<br/>React · Vite · nginx"]
+  BE["backend<br/>Express · Mongoose"]
+  DB[("MongoDB")]
 
-## Stack
-
-| Layer | Technology |
-| --- | --- |
-| Frontend | React 17, Create React App, Axios, nginx runtime |
-| Backend | Node.js, Express, Mongoose, CORS |
-| Database | MongoDB 8.0.23 |
-| Local runtime | Docker Compose |
-| Cloud infrastructure | AWS, Terraform, EKS, ECR, ALB, SSM Parameter Store |
-| Kubernetes add-ons | AWS Load Balancer Controller, External Secrets, Metrics Server, Cluster Autoscaler |
-| Observability | Prometheus, Grafana, Loki, Alloy |
+  FE -- "/api/todos" --> BE
+  BE -- "Mongoose ODM" --> DB
+```
 
 ## Repository structure
 
 ```text
-.
 ├── src/                    # React frontend, Express backend, MongoDB compose stack
-├── terraform/              # AWS infrastructure modules and dev environment services
+├── terraform/              # AWS infra modules + dev/uat env services
 ├── k8s-infra-aws-ssm/      # Kubernetes manifests for EKS deployment
 ├── script/                 # Deployment helper scripts
-└── README.md               # Project overview
 ```
 
 ## Application
 
 `src/` contains local application source and `compose.yaml`.
 
-- `src/frontend/` — React client served by nginx in production.
+- `src/frontend/` — React client built with Vite, served by nginx in production.
 - `src/backend/` — Express API service using Mongoose.
 - `src/compose.yaml` — local frontend, backend, MongoDB stack.
 - `src/frontend/Dockerfile-local` — frontend image for local deployment.
@@ -51,7 +43,7 @@ From `src/`:
 docker compose up --build
 ```
 
-Local deployment uses the frontend and backend `Dockerfile-local` files. Keep the Compose build config pointed at those files:
+Local deployment uses the frontend and backend `Dockerfile-local` files:
 
 ```yaml
 services:
@@ -106,7 +98,7 @@ Reusable modules include bootstrap state, networking, EKS, ECR, ALB controller, 
 - Namespace and gp3 StorageClass
 - Frontend Deployment, Service, HPA
 - Backend Deployment, Service, HPA, ConfigMap
-- MongoDB StatefulSet, Service, PVC, app-user job, rotation CronJobs/RBAC
+- MongoDB StatefulSet, Service, app-user job, rotation CronJobs/RBAC
 - External Secrets resources backed by AWS SSM Parameter Store
 - ALB Ingress routing
 - Prometheus, Grafana, Loki, Alloy
@@ -127,7 +119,7 @@ kubectl get ingress demo-react-eks -n dev -o jsonpath='{.status.loadBalancer.ing
 
 ## Deployment scripts
 
-`scripts/` are not used; helper scripts live in `script/`:
+`scripts/` is not used; helper scripts live in `script/`:
 
 | Script | Purpose |
 | --- | --- |

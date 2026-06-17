@@ -25,6 +25,7 @@ data:
             namespaces:
               names:
                 - dev
+                - uat
                 - monitor
         relabel_configs:
           - source_labels:

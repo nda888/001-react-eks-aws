@@ -17,6 +17,15 @@ spec:
       labels:
         app: grafana
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: topology.kubernetes.io/zone
+                    operator: In
+                    values:
+                      - us-east-1a
       securityContext:
         runAsUser: 472
         runAsGroup: 472
@@ -42,6 +51,12 @@ spec:
               value: "false"
             - name: GF_PATHS_DATA
               value: /var/lib/grafana-data
+            - name: GF_SERVER_DOMAIN
+              value: grafana-demo.h0m3.xyz
+            - name: GF_SERVER_ROOT_URL
+              value: https://grafana-demo.h0m3.xyz/
+            - name: GF_SERVER_PROTOCOL
+              value: http
             - name: GF_RENDERING_SERVER_URL
               value: http://grafana-image-renderer:8081/render
             - name: GF_RENDERING_CALLBACK_URL
@@ -51,12 +66,8 @@ spec:
                 secretKeyRef:
                   name: grafana-image-renderer
                   key: auth-token
-            - name: GF_SERVER_DOMAIN
-              value: grafana-demo.h0m3.xyz
-            - name: GF_SERVER_ROOT_URL
-              value: https://grafana-demo.h0m3.xyz/
-            - name: GF_SERVER_PROTOCOL
-              value: https
+            - name: GF_LOG_FILTERS
+              value: rendering:debug
           readinessProbe:
             httpGet:
               path: /api/health
@@ -75,7 +86,11 @@ spec:
             - name: grafana-dashboard-provider
               mountPath: /etc/grafana/provisioning/dashboards
             - name: grafana-dashboards
-              mountPath: /var/lib/grafana/dashboards
+              mountPath: /var/lib/grafana/dashboards/dev
+            - name: grafana-uat-dashboards
+              mountPath: /var/lib/grafana/dashboards/uat
+            - name: grafana-logs-dashboards
+              mountPath: /var/lib/grafana/dashboards/logs
             - name: grafana-data
               mountPath: /var/lib/grafana-data
               subPath: grafana
@@ -89,6 +104,12 @@ spec:
         - name: grafana-dashboards
           configMap:
             name: grafana-dashboards
+        - name: grafana-uat-dashboards
+          configMap:
+            name: grafana-uat-dashboards
+        - name: grafana-logs-dashboards
+          configMap:
+            name: grafana-logs-dashboards
         - name: grafana-data
           persistentVolumeClaim:
             claimName: grafana-data
