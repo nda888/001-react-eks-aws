@@ -12,15 +12,18 @@ output "next_steps" {
   description = "Bootstrap lifecycle guide (deploy and delete)"
   value       = <<-EOT
      1. Bucket "${aws_s3_bucket.tfstate.bucket}" is ready (locking via S3 native lockfile).
-     2. Deploy flow:
+     2. DEV deploy (shared infra + app):
         ./an-deploy dev ecr
         ./an-deploy dev networking
         ./an-deploy dev eks
         ./an-deploy dev eks-alb
         ./an-deploy dev secrets
-     3. Delete bucket flow:
+     3. UAT deploy (app only, shares EKS/ALB with DEV):
+        ./an-deploy uat ecr
+        ./an-deploy uat secrets
+     4. Delete flow:
+        ./an-deploy uat-destroy all
         ./an-deploy dev-destroy all
         ./an-deploy dev-destroy bootstrap
-     4. Use "Delete this bucket now? (y/n)" only after all dev bootstrap cleanup is complete.
   EOT
 }

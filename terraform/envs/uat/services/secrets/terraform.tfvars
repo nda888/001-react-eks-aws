@@ -1,0 +1,6 @@
+environment                     = "uat"
+namespace                       = "uat"
+ssm_prefix                      = "/demo-eks-uat/mongo"
+grafana_image_render_ssm_prefix = "/demo-eks-uat/image-render"
+mongo_database_name             = "uat_be_db"
+cluster_name                    = "demo-eks-uat"

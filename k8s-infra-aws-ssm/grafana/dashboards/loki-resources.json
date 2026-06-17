@@ -11,21 +11,21 @@
   "panels": [
     {
       "type": "timeseries",
-      "title": "Loki CPU cores",
+      "title": "Loki CPU percent",
       "datasource": {
         "type": "prometheus",
         "uid": "Prometheus"
       },
       "targets": [
         {
-          "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"monitor\", pod=~\"loki.*\", container=\"loki\"}[5m]))",
+          "expr": "(sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"monitor\", pod=~\"loki.*\", container=\"loki\"}[5m]))) * 100",
           "legendFormat": "{{pod}}",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "percent",
           "decimals": 4
         },
         "overrides": []

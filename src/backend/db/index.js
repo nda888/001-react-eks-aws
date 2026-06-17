@@ -11,7 +11,7 @@ exports.connect = (app) => {
   const options = {
     useNewUrlParser: true,
     autoIndex: false, // Don't build indexes
-      maxPoolSize: 10, // Maintain up to 10 socket connections
+    maxPoolSize: 10, // Maintain up to 10 socket connections
   };
 
   const connectWithRetry = () => {
@@ -24,7 +24,10 @@ exports.connect = (app) => {
         app.emit("ready");
       })
       .catch((err) => {
-        console.log("MongoDB connection unsuccessful, retry after 2 seconds.", err);
+        console.log(
+          "MongoDB connection unsuccessful, retry after 2 seconds.",
+          err
+        );
         setTimeout(connectWithRetry, 2000);
       });
   };

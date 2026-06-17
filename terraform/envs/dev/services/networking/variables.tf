@@ -11,9 +11,9 @@ variable "cluster_name" {
 }
 
 variable "vpc_id" {
-  description = "Existing VPC ID for dev networking. Provide through local tfvars or CI variable."
+  description = "Existing VPC ID to use"
   type        = string
-  nullable    = false
+  default     = "vpc-01f1e8c8953103c93"
 }
 
 variable "edge_public_subnet_azs" {

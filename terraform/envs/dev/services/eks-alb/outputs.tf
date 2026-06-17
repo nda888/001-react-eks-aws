@@ -33,7 +33,7 @@ output "next_steps" {
          kubectl get ingress demo-react-eks -n dev -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
 
      4. Get the ALB DNS name (via AWS CLI):
-         aws elbv2 describe-load-balancers --region us-east-1 --names demo-react-eks-dev --query 'LoadBalancers[0].DNSName' --output text
+         aws elbv2 describe-load-balancers --region us-east-1 --names demo-react-eks-dev-uat --query 'LoadBalancers[0].DNSName' --output text
 
      5. Create a CNAME record:
          ${var.app_domain_name} -> <ALB DNS hostname>

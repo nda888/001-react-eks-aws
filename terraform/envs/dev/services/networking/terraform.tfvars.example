@@ -1,4 +1,0 @@
-aws_region             = "us-east-1"
-cluster_name           = "demo-eks-dev"
-vpc_id                 = "vpc-xxxxxxxxxxxxxxxxx"
-edge_public_subnet_azs = ["us-east-1a", "us-east-1b"]

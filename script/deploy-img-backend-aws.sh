@@ -4,14 +4,39 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="${SCRIPT_DIR}/.."
 
+ENV="${1:-dev}"
+if [[ "${ENV}" != "dev" && "${ENV}" != "uat" && "${ENV}" != "all" ]]; then
+  echo "Usage: $0 <dev|uat|all>" >&2
+  exit 1
+fi
+(($# > 0)) && shift
+
+if [[ "${ENV}" == "all" ]]; then
+  echo "==> Deploying backend ALL environments: dev, then uat"
+  "${BASH_SOURCE[0]}" dev "$@"
+  "${BASH_SOURCE[0]}" uat "$@"
+  echo "==> ALL environments backend deployed (dev + uat)"
+  exit 0
+fi
+
 AWS_REGION="${AWS_REGION:-us-east-1}"
 AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:-}"
-EKS_CLUSTER="${EKS_CLUSTER:-demo-eks-dev}"
-NAMESPACE="${NAMESPACE:-dev}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-5m}"
-REPOSITORY_NAME="${BACKEND_REPOSITORY_NAME:-dev-demo-backend}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 PLATFORM="${PLATFORM:-linux/arm64}"
+
+case "${ENV}" in
+  dev)
+    EKS_CLUSTER="${EKS_CLUSTER:-demo-eks-dev}"
+    NAMESPACE="${NAMESPACE:-dev}"
+    REPOSITORY_NAME="${BACKEND_REPOSITORY_NAME:-dev-demo-backend}"
+    ;;
+  uat)
+    EKS_CLUSTER="${EKS_CLUSTER:-demo-eks-dev}"
+    NAMESPACE="${NAMESPACE:-uat}"
+    REPOSITORY_NAME="${BACKEND_REPOSITORY_NAME:-uat-demo-backend}"
+    ;;
+esac
 
 command -v aws >/dev/null || { echo "ERROR: aws CLI not found" >&2; exit 1; }
 command -v docker >/dev/null || { echo "ERROR: docker not found" >&2; exit 1; }

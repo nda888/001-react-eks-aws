@@ -1,0 +1,327 @@
+terraform {
+  required_version = ">= 1.10"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    helm = {
+      source  = "hashicorp/helm"
+      version = "~> 3.0"
+    }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+
+# ---------------------------------------------------------------------------
+# Data sources — shared EKS remote state and cluster auth
+# ---------------------------------------------------------------------------
+
+data "aws_caller_identity" "current" {}
+
+data "terraform_remote_state" "eks" {
+  backend = "s3"
+  config = {
+    bucket = var.state_bucket
+    key    = "dev/services/eks/terraform.tfstate"
+    region = var.aws_region
+  }
+}
+
+data "terraform_remote_state" "eks_alb" {
+  backend = "s3"
+  config = {
+    bucket = var.state_bucket
+    key    = "dev/services/eks-alb/terraform.tfstate"
+    region = var.aws_region
+  }
+}
+
+data "aws_eks_cluster" "main" {
+  name = data.terraform_remote_state.eks.outputs.cluster_name
+}
+
+data "aws_eks_cluster_auth" "main" {
+  name = data.terraform_remote_state.eks.outputs.cluster_name
+}
+
+provider "helm" {
+  kubernetes = {
+    host                   = data.terraform_remote_state.eks.outputs.cluster_endpoint
+    cluster_ca_certificate = base64decode(data.aws_eks_cluster.main.certificate_authority[0].data)
+    token                  = data.aws_eks_cluster_auth.main.token
+  }
+}
+
+provider "kubernetes" {
+  host                   = data.terraform_remote_state.eks.outputs.cluster_endpoint
+  cluster_ca_certificate = base64decode(data.aws_eks_cluster.main.certificate_authority[0].data)
+  token                  = data.aws_eks_cluster_auth.main.token
+}
+
+# ---------------------------------------------------------------------------
+# Locals
+# ---------------------------------------------------------------------------
+
+locals {
+  common_tags = {
+    Project     = var.cluster_name
+    Environment = var.environment
+    ManagedBy   = "terraform"
+    Service     = "secrets"
+  }
+
+  ssm_parameter_arn_prefix                      = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_prefix}/*"
+  grafana_image_render_ssm_parameter_arn_prefix = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.grafana_image_render_ssm_prefix}/*"
+  monitoring_ssm_parameter_arn_prefix           = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.monitoring_ssm_prefix}/*"
+
+  oidc_provider_url = data.terraform_remote_state.eks.outputs.oidc_provider_url
+  oidc_provider_arn = data.terraform_remote_state.eks.outputs.oidc_provider_arn
+
+  mongo_ssm_parameters = {
+    root_username   = "${var.ssm_prefix}/root_username"
+    root_password   = "${var.ssm_prefix}/root_password"
+    app_username    = "${var.ssm_prefix}/app_username"
+    app_password    = "${var.ssm_prefix}/app_password"
+    app_mongodb_uri = "${var.ssm_prefix}/app_mongodb_uri"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Namespace guards: shared namespaces must exist before env-scoped resources
+# ---------------------------------------------------------------------------
+
+data "kubernetes_namespace" "external_secrets" {
+  metadata {
+    name = var.external_secrets_namespace
+  }
+
+  depends_on = [data.terraform_remote_state.eks_alb]
+}
+
+# ---------------------------------------------------------------------------
+# Namespace guard: UAT namespace must exist (owned by shared eks-alb stack)
+# ---------------------------------------------------------------------------
+
+data "kubernetes_namespace" "uat" {
+  metadata {
+    name = var.namespace
+  }
+
+  depends_on = [data.terraform_remote_state.eks_alb]
+}
+
+# ---------------------------------------------------------------------------
+# Shared ESO IAM role permissions
+# ---------------------------------------------------------------------------
+
+# External Secrets Operator is installed once by the shared DEV stack. UAT only
+# grants that shared operator role read access to UAT SSM parameters.
+
+data "aws_iam_policy_document" "eso_ssm_read" {
+  statement {
+    sid    = "AllowSSMReadMongoSecrets"
+    effect = "Allow"
+    actions = [
+      "ssm:GetParameter",
+      "ssm:GetParameters",
+      "ssm:GetParametersByPath",
+    ]
+    resources = [
+      local.ssm_parameter_arn_prefix,
+      local.grafana_image_render_ssm_parameter_arn_prefix,
+      local.monitoring_ssm_parameter_arn_prefix,
+    ]
+  }
+}
+
+resource "aws_iam_policy" "eso_ssm_read" {
+  name        = "${var.cluster_name}-eso-ssm-read"
+  description = "Allow ESO to read Mongo SSM parameters under ${var.ssm_prefix}"
+  policy      = data.aws_iam_policy_document.eso_ssm_read.json
+  tags        = local.common_tags
+}
+
+resource "aws_iam_role_policy_attachment" "shared_eso_ssm_read" {
+  role       = var.shared_external_secrets_role_name
+  policy_arn = aws_iam_policy.eso_ssm_read.arn
+}
+
+# ---------------------------------------------------------------------------
+# Shared ESO IAM role permissions
+# ---------------------------------------------------------------------------
+
+# External Secrets Operator is installed once by the shared DEV stack. UAT only
+# grants that shared operator role read access to UAT SSM parameters.
+
+# ---------------------------------------------------------------------------
+# IRSA: Mongo rotation CronJob — SSM get/put for app and root password parameters
+# ---------------------------------------------------------------------------
+
+data "aws_iam_policy_document" "mongo_rotation_assume" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [local.oidc_provider_arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_provider_url}:sub"
+      values   = ["system:serviceaccount:${var.namespace}:mongo-credential-rotator"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_provider_url}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "mongo_rotation" {
+  name               = "${var.cluster_name}-mongo-rotation-role"
+  assume_role_policy = data.aws_iam_policy_document.mongo_rotation_assume.json
+  tags               = local.common_tags
+}
+
+data "aws_iam_policy_document" "mongo_rotation_ssm" {
+  statement {
+    sid    = "AllowSSMReadWriteMongoRotationParams"
+    effect = "Allow"
+    actions = [
+      "ssm:GetParameter",
+      "ssm:GetParameters",
+      "ssm:PutParameter",
+    ]
+    resources = [
+      "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_prefix}/root_password",
+      "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_prefix}/app_username",
+      "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_prefix}/app_password",
+      "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_prefix}/app_mongodb_uri",
+    ]
+  }
+}
+
+resource "aws_iam_policy" "mongo_rotation_ssm" {
+  name        = "${var.cluster_name}-mongo-rotation-ssm"
+  description = "Allow rotation CronJob to read/write Mongo SSM parameters (app + root)"
+  policy      = data.aws_iam_policy_document.mongo_rotation_ssm.json
+  tags        = local.common_tags
+}
+
+resource "aws_iam_role_policy_attachment" "mongo_rotation_ssm" {
+  role       = aws_iam_role.mongo_rotation.name
+  policy_arn = aws_iam_policy.mongo_rotation_ssm.arn
+}
+
+resource "kubernetes_service_account" "mongo_credential_rotator" {
+  metadata {
+    name      = "mongo-credential-rotator"
+    namespace = var.namespace
+
+    annotations = {
+      "eks.amazonaws.com/role-arn" = aws_iam_role.mongo_rotation.arn
+    }
+
+    labels = {
+      "app.kubernetes.io/name"       = "mongo-credential-rotator"
+      "app.kubernetes.io/managed-by" = "terraform"
+    }
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.mongo_rotation_ssm,
+    data.kubernetes_namespace.uat,
+  ]
+}
+
+# ---------------------------------------------------------------------------
+# Initial Mongo SSM SecureString parameters
+# ---------------------------------------------------------------------------
+
+resource "random_password" "mongo_root" {
+  length  = 32
+  special = false
+}
+
+resource "random_password" "mongo_app" {
+  length  = 32
+  special = false
+}
+
+resource "random_password" "grafana_image_render" {
+  length  = 32
+  special = false
+}
+
+resource "aws_ssm_parameter" "mongo_root_username" {
+  name  = local.mongo_ssm_parameters.root_username
+  type  = "SecureString"
+  value = var.mongo_root_username
+  tags  = local.common_tags
+}
+
+resource "aws_ssm_parameter" "mongo_root_password" {
+  name  = local.mongo_ssm_parameters.root_password
+  type  = "SecureString"
+  value = random_password.mongo_root.result
+  tags  = local.common_tags
+}
+
+resource "aws_ssm_parameter" "mongo_app_username" {
+  name  = local.mongo_ssm_parameters.app_username
+  type  = "SecureString"
+  value = var.mongo_app_username
+  tags  = local.common_tags
+}
+
+resource "aws_ssm_parameter" "mongo_app_password" {
+  name  = local.mongo_ssm_parameters.app_password
+  type  = "SecureString"
+  value = random_password.mongo_app.result
+  tags  = local.common_tags
+}
+
+resource "aws_ssm_parameter" "mongo_app_mongodb_uri" {
+  name  = local.mongo_ssm_parameters.app_mongodb_uri
+  type  = "SecureString"
+  value = "mongodb://${var.mongo_app_username}:${random_password.mongo_app.result}@${var.mongo_host}/${var.mongo_database_name}?authSource=admin"
+  tags  = local.common_tags
+}
+
+resource "aws_ssm_parameter" "grafana_image_render_auth_token" {
+  name  = "${var.grafana_image_render_ssm_prefix}/grafana_image_render_auth_token"
+  type  = "SecureString"
+  value = random_password.grafana_image_render.result
+  tags  = local.common_tags
+}
+
+# ---------------------------------------------------------------------------
+# Initial Prometheus basic-auth SSM SecureString parameter
+# ---------------------------------------------------------------------------
+
+resource "random_password" "prometheus_basic_auth" {
+  length  = 32
+  special = false
+}
+
+resource "aws_ssm_parameter" "prometheus_basic_auth" {
+  name  = "${var.monitoring_ssm_prefix}/prometheus_basic_auth"
+  type  = "SecureString"
+  value = "${var.prometheus_basic_auth_username}:${random_password.prometheus_basic_auth.result}"
+  tags  = local.common_tags
+}

@@ -7,11 +7,30 @@ data:
   dashboards.yaml: |
     apiVersion: 1
     providers:
-      - name: demo-app
+      - name: react-app-dev
         orgId: 1
-        folder: Demo App
+        folder: Dev
+        folderUid: PLACEHOLDER_DEV_FOLDER_UID
         type: file
         disableDeletion: false
         editable: true
         options:
-          path: /var/lib/grafana/dashboards
+          path: /var/lib/grafana/dashboards/dev
+      - name: react-app-uat
+        orgId: 1
+        folder: Uat
+        folderUid: PLACEHOLDER_UAT_FOLDER_UID
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/uat
+      - name: react-app-logs
+        orgId: 1
+        folder: Logs
+        folderUid: PLACEHOLDER_LOGS_FOLDER_UID
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/logs

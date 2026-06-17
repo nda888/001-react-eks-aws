@@ -14,6 +14,7 @@ docs/*
 *.auto.tfvars
 *.auto.tfvars.json
 !*.tfvars.example
+!terraform.tfvars
 *.backend.hcl
 plan.out
 *.plan
@@ -36,8 +37,8 @@ terraform.rc
 *kubeconfig*
 
 # Local helper scripts
-script/create-pr-dev-to-main.sh
-script/merge-pr-dev-to-main.sh
+script/create*main.sh
+script/merge*main.sh
 
 # Claude local workspace
 .claude/

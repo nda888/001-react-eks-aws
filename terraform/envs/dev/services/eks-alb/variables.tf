@@ -5,9 +5,9 @@ variable "aws_region" {
 }
 
 variable "state_bucket" {
-  description = "Terraform remote state bucket. Provide through backend config or local tfvars."
+  description = "S3 bucket name for Terraform remote state"
   type        = string
-  nullable    = false
+  default     = "demo-react-express-s3"
 }
 
 variable "cluster_name" {
@@ -29,9 +29,9 @@ variable "app_domain_name" {
 }
 
 variable "acm_certificate_arn" {
-  description = "ACM certificate ARN for ALB HTTPS listener. Provide through local tfvars or CI variable."
+  description = "ACM certificate ARN used by the Kubernetes ALB Ingress"
   type        = string
-  nullable    = false
+  default     = "arn:aws:acm:us-east-1:654654604308:certificate/ed9119c0-c6a7-49ac-84cf-ded38b29491c"
 }
 
 variable "alb_frontend_sg_id" {

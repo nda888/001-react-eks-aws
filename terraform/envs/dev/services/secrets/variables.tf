@@ -5,9 +5,9 @@ variable "aws_region" {
 }
 
 variable "state_bucket" {
-  description = "Terraform remote state bucket. Provide through backend config or local tfvars."
+  description = "S3 bucket name for Terraform remote state"
   type        = string
-  nullable    = false
+  default     = "demo-react-express-s3"
 }
 
 variable "cluster_name" {
@@ -67,11 +67,23 @@ variable "mongo_app_username" {
 variable "mongo_database_name" {
   description = "MongoDB application database name"
   type        = string
-  default     = "be_db"
+  default     = "dev_be_db"
 }
 
 variable "mongo_host" {
   description = "MongoDB in-cluster host and port used in app connection URI"
   type        = string
   default     = "mongo:27017"
+}
+
+variable "monitoring_ssm_prefix" {
+  description = "SSM parameter prefix for monitoring secrets (Prometheus basic-auth)"
+  type        = string
+  default     = "/demo-eks-dev/monitoring"
+}
+
+variable "prometheus_basic_auth_username" {
+  description = "Username for Prometheus basic-auth ingress (no secret)"
+  type        = string
+  default     = "admin"
 }
