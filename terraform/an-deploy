@@ -12,10 +12,35 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # Configuration
-ENVIRONMENTS=("dev" "uat")
+ENVIRONMENTS=("dev" "uat" "prod")
 MAX_MULTI_SERVICE=2
 AUTO_YES=0
 DRY_RUN=0
+SAVE_LOGS=0
+
+# ========================================
+# Service Recovery Map (for <env>-recover command)
+# ========================================
+# Maps "env/service" → resource entries "type:aws_name:terraform_address"
+# type: lb (NLB/ALB), tg (target group)
+declare -A SERVICE_RECOVER_MAP
+SERVICE_RECOVER_MAP["dev/receiver-nlb"]="lb:nlb-dev-alloyprom-receiver:module.receiver.aws_lb.receiver
+tg:nlb-dev-prom-tg:module.receiver.aws_lb_target_group.prometheus
+tg:nlb-dev-loki-tg:module.receiver.aws_lb_target_group.loki"
+SERVICE_RECOVER_MAP["dev/eks-alb"]="role:eks-react-dev-uat-alb-controller:module.alb_controller.aws_iam_role.alb_controller
+policy:eks-react-dev-uat-alb-controller-policy:module.alb_controller.aws_iam_policy.alb_controller"
+SERVICE_RECOVER_MAP["dev/secrets"]="ssm:/demo-eks-dev/mongo/root_username:aws_ssm_parameter.mongo_root_username
+ssm:/demo-eks-dev/mongo/root_password:aws_ssm_parameter.mongo_root_password
+ssm:/demo-eks-dev/mongo/app_username:aws_ssm_parameter.mongo_app_username
+ssm:/demo-eks-dev/mongo/app_password:aws_ssm_parameter.mongo_app_password
+ssm:/demo-eks-dev/mongo/app_mongodb_uri:aws_ssm_parameter.mongo_app_mongodb_uri
+ssm:/demo-eks-dev/image-render/grafana_image_render_auth_token:aws_ssm_parameter.grafana_image_render_auth_token"
+SERVICE_RECOVER_MAP["uat/secrets"]="ssm:/demo-eks-uat/mongo/root_username:aws_ssm_parameter.mongo_root_username
+ssm:/demo-eks-uat/mongo/root_password:aws_ssm_parameter.mongo_root_password
+ssm:/demo-eks-uat/mongo/app_username:aws_ssm_parameter.mongo_app_username
+ssm:/demo-eks-uat/mongo/app_password:aws_ssm_parameter.mongo_app_password
+ssm:/demo-eks-uat/mongo/app_mongodb_uri:aws_ssm_parameter.mongo_app_mongodb_uri
+ssm:/demo-eks-uat/image-render/grafana_image_render_auth_token:aws_ssm_parameter.grafana_image_render_auth_token"
 
 # ========================================
 # Utility Functions
@@ -81,6 +106,11 @@ is_terraform_init_current() {
     local backend_file="$dir/backend.tf"
 
     [[ -f "$init_state_file" ]] || return 1
+    [[ -s "$init_state_file" ]] || return 1
+    [[ -d "$dir/.terraform" ]] || return 1
+    # .terraform/ must contain at least one tfstate file (catches empty/partial init).
+    compgen -G "$dir/.terraform/*terraform.tfstate" >/dev/null || return 1
+    compgen -G "$dir/.terraform/*terraform.tfstate.backup" >/dev/null || true
 
     # Re-init if backend config was edited after the last init metadata write.
     if [[ -f "$backend_file" && "$backend_file" -nt "$init_state_file" ]]; then
@@ -94,14 +124,34 @@ confirm_yes_no() {
     local prompt="$1"
     local answer
 
+    # Strip trailing "(y/n): " or "y/n" suffixes so caller-supplied hints don't double up.
+    prompt="${prompt% (y/n): }"
+    prompt="${prompt% (y/n)}"
+    prompt="${prompt% y/n: }"
+    prompt="${prompt% y/n}"
+
     if [[ "${AUTO_YES:-0}" -eq 1 ]]; then
         echo -e "${prompt}${CYAN}y (auto via -y)${NC}"
         return 0
     fi
 
-    echo -en "$prompt"
+    echo -en "${prompt} (${GREEN}y${NC}/${RED}n${NC}): "
     read -r answer
     [[ "$answer" =~ ^[Yy]$ ]]
+}
+
+log_saver() {
+    local env="$1"
+    local service="$2"
+    local temp_log="$3"
+    local log_dir="docs/logs"
+    local ts
+    ts="$(date '+%d%b%Y-%Hh%Mm%Ss' | tr 'A-Z' 'a-z')"
+    local dest="${log_dir}/${env}-${service}-destroy-${ts}.log"
+
+    mkdir -p "$log_dir"
+    cp "$temp_log" "$dest"
+    echo -e "${CYAN}Log saved:${NC} ${dest}"
 }
 
 # ========================================
@@ -163,8 +213,9 @@ run_backend_init_command() {
     echo -e "${BLUE}Deploying DEV prerequisite services...${NC}"
     echo -e "${YELLOW}Order:${NC} ${dev_prereq_services[*]}"
     for service in "${dev_prereq_services[@]}"; do
-        run_service_plan "$dev_env" "$service"
-        run_service_apply "$dev_env" "$service"
+        if run_service_plan "$dev_env" "$service"; then
+            run_service_apply "$dev_env" "$service"
+        fi
     done
 
     echo -e "${GREEN}====== Backend init + DEV prerequisites completed!${NC}"
@@ -179,12 +230,36 @@ run_backend_init_command() {
         echo -e "${CYAN}Creates: uat-demo-backend, uat-demo-frontend, uat-mongo-rotator${NC}"
         if confirm_yes_no "Deploy UAT ECR prerequisites now? (y/n): "; then
             echo -e "${BLUE}Deploying UAT ECR service...${NC}"
-            run_service_plan "$uat_env" "ecr"
-            run_service_apply "$uat_env" "ecr"
+            if run_service_plan "$uat_env" "ecr"; then
+                run_service_apply "$uat_env" "ecr"
+            fi
             echo -e "${GREEN}====== UAT ECR prerequisites completed!${NC}"
         else
             echo -e "${YELLOW}Skipped UAT ECR deploy.${NC}"
             echo -e "${YELLOW}Run later: ./an-deploy uat ecr${NC}"
+        fi
+    fi
+
+    local prod_env="prod"
+    local -a prod_ecr_services=("ecr")
+    local prod_confirm
+
+    if [[ -d "$(service_dir "$prod_env" "ecr")" ]]; then
+        echo ""
+        echo -e "${YELLOW}PROD detected. Deploy PROD ECR prerequisites now?${NC}"
+        echo -e "${CYAN}Creates: prod-demo-backend, prod-demo-frontend, prod-mongo-rotator${NC}"
+        if confirm_yes_no "Deploy PROD ECR prerequisites now? (y/n): "; then
+            echo -e "${BLUE}Deploying PROD ECR service...${NC}"
+            if run_service_plan "$prod_env" "ecr"; then
+                if ! run_service_apply "$prod_env" "ecr"; then
+                    echo -e "${RED}------ partial: ${prod_env}/ecr apply failed${NC}" >&2
+                    return 1
+                fi
+            fi
+            echo -e "${GREEN}====== PROD ECR prerequisites completed!${NC}"
+        else
+            echo -e "${YELLOW}Skipped PROD ECR deploy.${NC}"
+            echo -e "${YELLOW}Run later: ./an-deploy prod ecr${NC}"
         fi
     fi
 }
@@ -757,7 +832,7 @@ expand_deploy_targets() {
 
     out_ref=()
     for service in "${original[@]}"; do
-        if [[ "$env" == "dev" && "$service" == "eks" ]]; then
+        if [[ "$service" == "eks" ]] && [[ "$env" == "dev" || "$env" == "prod" ]]; then
             if ! array_contains "eks" "${out_ref[@]}"; then
                 out_ref+=("eks")
             fi
@@ -794,6 +869,8 @@ run_service_init() {
     local env="$1"
     local service="$2"
     local dir
+    local init_log
+    local rc
 
     dir="$(service_dir "$env" "$service")"
 
@@ -803,8 +880,36 @@ run_service_init() {
     fi
 
     echo -e "${BLUE}Initializing service: ${CYAN}${env}/${service}${NC}"
+    init_log="$(mktemp)"
     print_terraform_command "terraform -chdir=$dir init"
-    terraform -chdir="$dir" init
+    set +e
+    terraform -chdir="$dir" init >"$init_log" 2>&1
+    rc=$?
+    set -e
+
+    if [[ $rc -eq 0 ]]; then
+        rm -f "$init_log"
+        return 0
+    fi
+
+    if grep -Eq '(Backend reinitialization required|Backend configuration changed|A change in the backend configuration has been detected)' "$init_log"; then
+        echo -e "${YELLOW}Init reported backend config change; retrying with -reconfigure${NC}"
+        print_terraform_command "terraform -chdir=$dir init -reconfigure"
+        set +e
+        terraform -chdir="$dir" init -reconfigure >"$init_log" 2>&1
+        rc=$?
+        set -e
+    fi
+
+    if [[ $rc -ne 0 ]]; then
+        echo -e "${RED}ERROR: terraform init failed for ${env}/${service}${NC}" >&2
+        sed -n '1,20p' "$init_log" >&2
+        rm -f "$init_log"
+        return 1
+    fi
+
+    rm -f "$init_log"
+    return 0
 }
 
 run_service_validate() {
@@ -824,6 +929,10 @@ run_service_plan() {
     local service="$2"
     local dir
     local tfplan
+    local plan_log
+    local rc
+    local retry
+    local use_tfvars=0
 
     dir="$(service_dir "$env" "$service")"
     tfplan="$(plan_name "$service")"
@@ -837,15 +946,44 @@ run_service_plan() {
     check_remote_state_dependencies "$env" "$service" || return 1
     run_service_init "$env" "$service"
 
-    if [[ -f "$dir/terraform.tfvars" ]]; then
-        print_terraform_command "terraform -chdir=$dir plan -var-file=terraform.tfvars -out=$tfplan"
-        terraform -chdir="$dir" plan -var-file=terraform.tfvars -out="$tfplan"
-    else
-        print_terraform_command "terraform -chdir=$dir plan -out=$tfplan"
-        terraform -chdir="$dir" plan -out="$tfplan"
-    fi
+    [[ -f "$dir/terraform.tfvars" ]] && use_tfvars=1
 
-    echo -e "${GREEN}Plan saved to: $(plan_path "$env" "$service")${NC}"
+    for retry in 1 2; do
+        plan_log="$(mktemp)"
+        if [[ "$use_tfvars" -eq 1 ]]; then
+            print_terraform_command "terraform -chdir=$dir plan -var-file=terraform.tfvars -out=$tfplan"
+            set +e
+            terraform -chdir="$dir" plan -var-file=terraform.tfvars -out="$tfplan" >"$plan_log" 2>&1
+            rc=$?
+            set -e
+        else
+            print_terraform_command "terraform -chdir=$dir plan -out=$tfplan"
+            set +e
+            terraform -chdir="$dir" plan -out="$tfplan" >"$plan_log" 2>&1
+            rc=$?
+            set -e
+        fi
+
+        if [[ $rc -eq 0 ]]; then
+            rm -f "$plan_log"
+            echo -e "${GREEN}Plan saved to: $(plan_path "$env" "$service")${NC}"
+            return 0
+        fi
+
+        if [[ $retry -eq 1 ]] && grep -Eq 'Backend initialization required' "$plan_log"; then
+            echo -e "${YELLOW}Plan reported backend init required; re-initializing and retrying plan${NC}"
+            run_service_init "$env" "$service" || { rm -f "$plan_log"; return 1; }
+            rm -f "$plan_log"
+            continue
+        fi
+
+        echo -e "${RED}ERROR: terraform plan failed for ${env}/${service}${NC}" >&2
+        sed -n '1,20p' "$plan_log" >&2
+        rm -f "$plan_log" "$dir/$tfplan"
+        return 1
+    done
+
+    return 1
 }
 
 run_service_apply() {
@@ -854,6 +992,9 @@ run_service_apply() {
     local dir
     local tfplan
     local plan_file
+    local apply_log
+    local rc
+    local retry
 
     dir="$(service_dir "$env" "$service")"
     tfplan="$(plan_name "$service")"
@@ -865,9 +1006,42 @@ run_service_apply() {
         return 1
     fi
 
+    if ! terraform -chdir="$dir" show "$tfplan" >/dev/null 2>&1; then
+        echo -e "${RED}ERROR: Plan file is stale or invalid (version mismatch). Re-generate with:${NC}"
+        echo -e "${YELLOW}  ./an-deploy ${env}-plan $service${NC}"
+        rm -f "$plan_file"
+        return 1
+    fi
+
     echo -e "${BLUE}Applying service: ${CYAN}${env}/${service}${NC}"
-    print_terraform_command "terraform -chdir=$dir apply $tfplan"
-    terraform -chdir="$dir" apply "$tfplan"
+
+    for retry in 1 2; do
+        apply_log="$(mktemp)"
+        print_terraform_command "terraform -chdir=$dir apply $tfplan"
+        set +e
+        terraform -chdir="$dir" apply "$tfplan" >"$apply_log" 2>&1
+        rc=$?
+        set -e
+
+        if [[ $rc -eq 0 ]]; then
+            rm -f "$apply_log"
+            return 0
+        fi
+
+        if [[ $retry -eq 1 ]] && grep -Eq 'Saved plan is stale' "$apply_log"; then
+            echo -e "${YELLOW}Plan was stale; regenerating and re-applying${NC}"
+            rm -f "$apply_log"
+            run_service_plan "$env" "$service" || return 1
+            continue
+        fi
+
+        echo -e "${RED}ERROR: terraform apply failed for ${env}/${service}${NC}" >&2
+        sed -n '1,20p' "$apply_log" >&2
+        rm -f "$apply_log"
+        return 1
+    done
+
+    return 1
 }
 
 run_service_destroy() {
@@ -876,8 +1050,12 @@ run_service_destroy() {
     local dir
     local -a destroy_args=("-auto-approve")
     local cmd
+    local destroy_log
+    local rc
 
     dir="$(service_dir "$env" "$service")"
+
+    check_remote_state_dependencies "$env" "$service" || return 1
 
     echo -e "${RED}Destroying service: ${CYAN}${env}/${service}${NC}"
     run_service_init "$env" "$service"
@@ -888,7 +1066,28 @@ run_service_destroy() {
 
     cmd="terraform -chdir=$dir destroy ${destroy_args[*]}"
     print_terraform_command "$cmd"
-    terraform -chdir="$dir" destroy "${destroy_args[@]}"
+
+    destroy_log="$(mktemp)"
+    set +e
+    terraform -chdir="$dir" destroy "${destroy_args[@]}" >"$destroy_log" 2>&1
+    rc=$?
+    set -e
+
+    if [[ $rc -ne 0 ]]; then
+        echo -e "${RED}ERROR: terraform destroy failed for ${env}/${service}${NC}" >&2
+        echo -e "${YELLOW}Last 30 lines of output:${NC}" >&2
+        tail -n 30 "$destroy_log" >&2
+        if [[ "${SAVE_LOGS:-0}" -eq 1 ]]; then
+            log_saver "$env" "$service" "$destroy_log"
+        fi
+        rm -f "$destroy_log"
+        return 1
+    fi
+
+    if [[ "${SAVE_LOGS:-0}" -eq 1 ]]; then
+        log_saver "$env" "$service" "$destroy_log"
+    fi
+    rm -f "$destroy_log"
 }
 
 run_service_show_plan() {
@@ -1203,8 +1402,9 @@ run_deploy_command() {
             fi
 
             for service in "${ordered[@]}"; do
-                run_service_plan "$env" "$service"
-                run_service_apply "$env" "$service"
+                if run_service_plan "$env" "$service"; then
+                    run_service_apply "$env" "$service"
+                fi
             done
 
             echo -e "${GREEN}====== ${env_name} deploy completed!${NC}"
@@ -1245,8 +1445,9 @@ run_deploy_command() {
     fi
 
     for service in "${ordered[@]}"; do
-        run_service_plan "$env" "$service"
-        run_service_apply "$env" "$service"
+        if run_service_plan "$env" "$service"; then
+            run_service_apply "$env" "$service"
+        fi
     done
 
     echo -e "${GREEN}====== ${env_name} deploy completed!${NC}"
@@ -1311,6 +1512,119 @@ run_deploy_dry_run_command() {
     done
 }
 
+run_recover_command() {
+    local env="$1"
+    local service="${2:-}"
+    local dir
+    local key="${env}/${service}"
+    local -a entries=()
+    local entry
+    local type aws_name tf_addr arn region
+    local imported=0 skipped=0 missing=0
+
+    if [[ -z "$service" ]]; then
+        echo -e "${RED}ERROR: Service name required${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy ${env}-recover <service>${NC}"
+        return 1
+    fi
+
+    validate_environment "$env" || return 1
+    validate_service "$env" "$service" || return 1
+
+    # Build entries list from map
+    local map_val="${SERVICE_RECOVER_MAP[$key]:-}"
+    if [[ -z "$map_val" ]]; then
+        echo -e "${RED}ERROR: Recovery not yet supported for ${key}${NC}"
+        return 1
+    fi
+    mapfile -t entries <<< "$map_val"
+
+    dir="$(service_dir "$env" "$service")"
+    region="$(get_backend_config_value "$env" "$service" "region" || echo "us-east-1")"
+
+    run_service_init "$env" "$service" || return 1
+
+    echo -e "${BLUE}Scanning AWS for orphaned resources in ${CYAN}${key}${NC}..."
+
+    for entry in "${entries[@]}"; do
+        [[ -z "$entry" ]] && continue
+        IFS=':' read -r type aws_name tf_addr <<< "$entry"
+
+        # Already in terraform state?
+        if terraform -chdir="$dir" state list 2>/dev/null | grep -qF "$tf_addr"; then
+            echo -e "  ${GREEN}OK${NC}    ${tf_addr}"
+            ((skipped++)) || true
+            continue
+        fi
+
+        # Query AWS ARN by name
+        arn=""
+        case "$type" in
+            lb)
+                arn="$(aws elbv2 describe-load-balancers \
+                    --names "$aws_name" \
+                    --region "$region" \
+                    --query 'LoadBalancers[0].LoadBalancerArn' \
+                    --output text 2>/dev/null || true)"
+                ;;
+            tg)
+                arn="$(aws elbv2 describe-target-groups \
+                    --names "$aws_name" \
+                    --region "$region" \
+                    --query 'TargetGroups[0].TargetGroupArn' \
+                    --output text 2>/dev/null || true)"
+                ;;
+            role)
+                arn="$(aws iam get-role \
+                    --role-name "$aws_name" \
+                    --query 'Role.Arn' \
+                    --output text 2>/dev/null || true)"
+                ;;
+            policy)
+                arn="$(aws iam list-policies \
+                    --scope Local \
+                    --query "Policies[?PolicyName=='${aws_name}'].Arn" \
+                    --output text 2>/dev/null || true)"
+                ;;
+            ssm)
+                arn="$(aws ssm get-parameter \
+                    --name "$aws_name" \
+                    --query 'Parameter.ARN' \
+                    --output text 2>/dev/null || true)"
+                ;;
+            *)
+                echo -e "  ${RED}SKIP${NC}  ${aws_name} — unknown type '${type}'"
+                ((missing++)) || true
+                continue
+                ;;
+        esac
+
+        if [[ -z "$arn" || "$arn" == "None" ]]; then
+            echo -e "  ${YELLOW}SKIP${NC}  ${aws_name} — not found in AWS"
+            ((missing++)) || true
+            continue
+        fi
+
+        # import_id defaults to ARN; role + ssm use name
+        local import_id="$arn"
+        [[ "$type" == "role" || "$type" == "ssm" ]] && import_id="$aws_name"
+
+        echo -e "  ${BLUE}IMPORT${NC} ${tf_addr}"
+        if terraform -chdir="$dir" import "$tf_addr" "$import_id" >/dev/null 2>&1; then
+            ((imported++)) || true
+        else
+            echo -e "  ${RED}FAIL${NC}  ${tf_addr} — import error (check above)"
+            return 1
+        fi
+    done
+
+    echo ""
+    echo -e "${GREEN}Recovery complete:${NC} imported=${imported} in-state=${skipped} not-found=${missing}"
+    if [[ $imported -gt 0 ]]; then
+        echo -e "${YELLOW}Next:${NC} ./an-deploy ${env} ${service} -y"
+    fi
+}
+
 parse_global_deploy_all_flags() {
     AUTO_YES=0
     DRY_RUN=0
@@ -1339,38 +1653,51 @@ run_global_deploy_all_command() {
     validate_prerequisites || return 1
     validate_environment "dev" || return 1
     validate_environment "uat" || return 1
+    validate_environment "prod" || return 1
 
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
-        echo -e "${BLUE}Global deploy dry run for DEV and UAT.${NC}"
+        echo -e "${BLUE}Global deploy dry run for DEV, UAT and PROD.${NC}"
         echo -e "${YELLOW}Mode:${NC} dry-run, auto-yes=${AUTO_YES}"
     else
-        echo -e "${BLUE}This runs full DEV/UAT Terraform deploy flow.${NC}"
+        echo -e "${BLUE}This runs full DEV/UAT/PROD Terraform deploy flow.${NC}"
         echo -e "${YELLOW}Mode:${NC} apply, auto-yes=${AUTO_YES}"
     fi
-    echo -e "${YELLOW}Order:${NC} be-init -> dev eks eks-alb -> uat ecr -> dev secrets -> uat secrets"
+    echo -e "${YELLOW}Order:${NC} be-init -> dev eks -> uat ecr -> prod networking ecr eks -> prod eks -> dev receiver-nlb -> dev eks-alb -> dev secrets -> uat secrets -> prod eks-alb -> prod secrets"
 
-    if ! confirm_yes_no "Run ${GREEN}Full${NC} DEV/UAT Terraform deploy flow? (y/n): "; then
+    if ! confirm_yes_no "Run ${GREEN}Full${NC} DEV/UAT/PROD Terraform deploy flow? (y/n): "; then
         echo -e "${YELLOW}Operation cancelled${NC}"
         return 1
     fi
 
     if [[ "${DRY_RUN:-0}" -eq 1 ]]; then
         run_backend_init_dry_run_command || return 1
-        run_deploy_dry_run_command "dev" "eks" "eks-alb" || return 1
+        run_deploy_dry_run_command "dev" "eks" || return 1
         run_deploy_dry_run_command "uat" "ecr" || return 1
+        run_deploy_dry_run_command "prod" "networking" "ecr" || return 1
+        run_deploy_dry_run_command "prod" "eks" || return 1
+        run_deploy_dry_run_command "dev" "receiver-nlb" || return 1
+        run_deploy_dry_run_command "dev" "eks-alb" || return 1
         run_deploy_dry_run_command "dev" "secrets" || return 1
         run_deploy_dry_run_command "uat" "secrets" || return 1
-        echo -e "${GREEN}====== Global deploy dry run completed for DEV and UAT!${NC}"
+        run_deploy_dry_run_command "prod" "eks-alb" || return 1
+        run_deploy_dry_run_command "prod" "secrets" || return 1
+        echo -e "${GREEN}====== Global deploy dry run completed for DEV, UAT and PROD!${NC}"
         return 0
     fi
 
     run_backend_init_command || return 1
-    run_deploy_command "dev" "eks" "eks-alb" || return 1
+    run_deploy_command "dev" "eks" || return 1
     run_deploy_command "uat" "ecr" || return 1
+    run_deploy_command "prod" "networking" "ecr" || return 1
+    run_deploy_command "prod" "eks" || return 1
+    run_deploy_command "dev" "receiver-nlb" || return 1
+    run_deploy_command "dev" "eks-alb" || return 1
     run_deploy_command "dev" "secrets" || return 1
     run_deploy_command "uat" "secrets" || return 1
+    run_deploy_command "prod" "eks-alb" || return 1
+    run_deploy_command "prod" "secrets" || return 1
 
-    echo -e "${GREEN}====== Global deploy completed for DEV and UAT!${NC}"
+    echo -e "${GREEN}====== Global deploy completed for DEV, UAT and PROD!${NC}"
 }
 
 run_destroy_command() {
@@ -1384,6 +1711,14 @@ run_destroy_command() {
     local service
     local has_failure=0
     local arg
+
+    # -l is only for global destroy-all. Reject on per-env destroys.
+    for arg in "$@"; do
+        if [[ "$arg" == "-l" ]]; then
+            echo -e "${RED}ERROR: -l flag is only for ./an-deploy destroy all -l${NC}" >&2
+            return 1
+        fi
+    done
 
     env_name="$(env_upper "$env")"
 
@@ -1437,11 +1772,13 @@ run_destroy_command() {
                 if ! run_service_destroy "$env" "$service"; then
                     has_failure=1
                     echo -e "${RED}Failed to destroy service: ${env}/${service}${NC}"
+                    echo -e "${RED}Stopping destroy to prevent cascading failures. Fix the error and re-run.${NC}"
+                    break
                 fi
             done
 
             if [[ $has_failure -eq 1 ]]; then
-                echo -e "${RED}------ ${env_name} destroy completed with errors${NC}"
+                echo -e "${RED}------ ${env_name} destroy aborted with errors (remaining services skipped)${NC}"
                 return 1
             fi
 
@@ -1476,11 +1813,13 @@ run_destroy_command() {
         if ! run_service_destroy "$env" "$service"; then
             has_failure=1
             echo -e "${RED}Failed to destroy service: ${env}/${service}${NC}"
+            echo -e "${RED}Stopping destroy to prevent cascading failures. Fix the error and re-run.${NC}"
+            break
         fi
     done
 
     if [[ $has_failure -eq 1 ]]; then
-        echo -e "${RED}------ ${env_name} destroy completed with errors${NC}"
+        echo -e "${RED}------ ${env_name} destroy aborted with errors (remaining services skipped)${NC}"
         return 1
     fi
 
@@ -1488,17 +1827,28 @@ run_destroy_command() {
 }
 
 run_global_destroy_all_command() {
+    local -a cleaned=()
+    for arg in "$@"; do
+        if [[ "$arg" == "-l" ]]; then
+            SAVE_LOGS=1
+        else
+            cleaned+=("$arg")
+        fi
+    done
+    set -- "${cleaned[@]}"
+
     if [[ $# -ne 1 || "$1" != "all" ]]; then
-        echo -e "${RED}ERROR: Command requires exactly: ./an-deploy destroy all${NC}"
+        echo -e "${RED}ERROR: Command requires exactly: ./an-deploy destroy all [-l]${NC}"
         return 1
     fi
 
     validate_prerequisites || return 1
     validate_environment "uat" || return 1
     validate_environment "dev" || return 1
+    validate_environment "prod" || return 1
 
-    echo -e "${RED}This destroys all Terraform-managed resources for UAT and DEV.${NC}"
-    echo -e "${YELLOW}Order:${NC} Deleting UAT then DEV."
+    echo -e "${RED}This destroys all Terraform-managed resources for PROD, UAT and DEV.${NC}"
+    echo -e "${YELLOW}Order:${NC} Deleting PROD, then UAT, then DEV."
     echo -e "${YELLOW}Existing per-env destroy flows may ask typed confirmation and bootstrap cleanup questions.${NC}"
     read -r -p "Proceed? (y/n): " confirm
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
@@ -1506,10 +1856,11 @@ run_global_destroy_all_command() {
         return 1
     fi
 
+    run_destroy_command "prod" "all" || return 1
     run_destroy_command "uat" "all" || return 1
     run_destroy_command "dev" "all" || return 1
 
-    echo -e "${GREEN}====== Global destroy completed for UAT and DEV!${NC}"
+    echo -e "${GREEN}====== Global destroy completed for PROD, UAT and DEV!${NC}"
 }
 
 run_show_service_plan_command() {
@@ -1545,17 +1896,17 @@ print_available_services() {
 }
 
 show_help() {
-    echo -e "${BLUE}an-deploy - Terraform Management Script for DEV & UAT${NC}"
+    echo -e "${BLUE}an-deploy - Terraform Management Script for DEV, UAT & PROD${NC}"
     echo ""
     echo -e "${YELLOW}Usage:${NC}"
     echo "  ./an-deploy <command> [service|all|bootstrap] [flags]"
     echo ""
     echo -e "${YELLOW}Global Commands:${NC}"
-    echo -e "  ${GREEN}all [-y] [--dry-run]${NC} - Deploy full DEV/UAT flow (bootstrap, dev eks eks-alb, uat ecr, dev secrets, uat secrets)"
-    echo -e "  ${GREEN}destroy all${NC} - Destroy all UAT and DEV resources"
+    echo -e "  ${GREEN}all [-y] [--dry-run]${NC} - Deploy full DEV/UAT/PROD flow (bootstrap, dev eks eks-alb, uat ecr, dev secrets, uat secrets, prod networking ecr, prod eks eks-alb, prod secrets)"
+    echo -e "  ${GREEN}destroy all ${CYAN}[-l]${NC} - Destroy all PROD, UAT and DEV resources; -l saves terraform logs to docs/logs/"
     echo ""
     echo -e "${YELLOW}Bootstrap Commands:${NC}"
-    echo -e "  ${GREEN}be-init${NC} - Bootstrap backend bucket, then deploy DEV prerequisites (networking, ecr). Optionally deploys UAT ECR."
+    echo -e "  ${GREEN}be-init${NC} - Bootstrap backend bucket, then deploy DEV prerequisites (networking, ecr). Optionally deploys UAT and PROD ECR."
     echo ""
     echo -e "${YELLOW}Environment Commands:${NC}"
     echo -e "  ${GREEN}dev-init${NC}     <s1> [s2]|all - Init DEV (all services or one service)"
@@ -1566,32 +1917,60 @@ show_help() {
     echo -e "  ${GREEN}uat-validate${NC} <s1> [s2]|all - Validate UAT (allowed services only)"
     echo -e "  ${GREEN}uat-plan${NC}     <s1> [s2]|all - Plan UAT (allowed services only)"
     echo -e "  ${GREEN}uat-apply${NC}    <s1> [s2]|all - Apply UAT (allowed services only)"
+    echo -e "  ${GREEN}prod-init${NC}    <s1> [s2]|all - Init PROD (all services or one service)"
+    echo -e "  ${GREEN}prod-validate${NC} <s1> [s2]|all - Validate PROD (all services or one service)"
+    echo -e "  ${GREEN}prod-plan${NC}    <s1> [s2]|all - Plan PROD (all services or one service)"
+    echo -e "  ${GREEN}prod-apply${NC}   <s1> [s2]|all - Apply PROD (all services or one service)"
     echo ""
     echo -e "${YELLOW}Service Commands (max 2 services for deploy/destroy):${NC}"
     echo -e "  ${GREEN}dev${NC}          <s1> [s2]|all [-y] [--dry-run] - Plan + apply selected DEV service(s), or all; --dry-run plans only"
     echo -e "  ${GREEN}dev-destroy${NC}  - Destroy selected DEV service(s), all, or bootstrap"
     echo -e "  ${GREEN}dev-svc-plan${NC} <service> - Show saved DEV service plan"
+    echo -e "  ${GREEN}dev-recover${NC}  <service> - Recover orphaned AWS resources into terraform state after failed apply"
     echo -e "  ${GREEN}uat${NC}          <s1> [s2]|all [-y] [--dry-run] - Plan + apply selected UAT service(s), or all; --dry-run plans only"
     echo -e "  ${GREEN}uat-destroy${NC}  - Destroy selected UAT service(s), all, or bootstrap"
     echo -e "  ${GREEN}uat-svc-plan${NC} <service> - Show saved UAT service plan"
+    echo -e "  ${GREEN}prod${NC}         <s1> [s2]|all [-y] [--dry-run] - Plan + apply selected PROD service(s), or all; --dry-run plans only"
+    echo -e "  ${GREEN}prod-destroy${NC} - Destroy selected PROD service(s), all, or bootstrap"
+    echo -e "  ${GREEN}prod-svc-plan${NC} <service> - Show saved PROD service plan"
     echo ""
-    echo -e "${YELLOW}Note:${NC} selecting dev/eks also runs dev/eks-post (post-cluster Kubernetes objects)."
+    echo -e "${YELLOW}Note:${NC} selecting dev/eks or prod/eks also runs eks-post (post-cluster Kubernetes objects)."
     echo -e "${YELLOW}Note:${NC} UAT shares EKS/ALB with DEV. Blocked: networking, eks, eks-alb, eks-post."
-    echo -e "${YELLOW}Note:${NC} global destroy all runs UAT first, then DEV."
-    echo -e "${YELLOW}Note:${NC} global all deploy order: be-init -> dev eks eks-alb -> dev secrets -> uat secrets."
+    echo -e "${YELLOW}Note:${NC} PROD owns a separate EKS cluster, ALB, SSM, IAM, MongoDB and state keys."
+    echo -e "${YELLOW}Note:${NC} global destroy all runs PROD first, then UAT, then DEV."
+    echo -e "${YELLOW}Note:${NC} global all deploy order: be-init -> dev eks -> uat ecr -> prod networking ecr -> prod eks -> dev receiver-nlb -> dev eks-alb -> dev secrets -> uat secrets -> prod eks-alb -> prod secrets."
     echo -e "${YELLOW}Note:${NC} -y auto-answers script-owned (y/n) prompts. Does not bypass typed destructive confirmations."
     echo -e "${YELLOW}Note:${NC} --dry-run runs real Terraform init/validate/plan but never applies."
+    echo -e "${YELLOW}Note:${NC} dev-recover imports orphaned AWS resources into terraform state. Run after failed apply with 'already exists' errors."
     echo ""
     echo -e "${YELLOW}Runtime Info Retrieval:${NC}"
     echo -e "  ${GREEN}dev-get${NC} elb - Print AWS Load Balancer DNS name for dev app ALB"
     echo -e "  ${GREEN}dev-get${NC} mongodb - Print runtime MongoDB secrets from dev cluster"
+    echo -e "  ${GREEN}dev-get${NC} prometheus - Print Prometheus basic-auth htpasswd line (decoded from K8s Secret)"
     echo -e "  ${GREEN}uat-get${NC} elb - Print AWS Load Balancer DNS name (shared with dev)"
     echo -e "  ${GREEN}uat-get${NC} mongodb - Print runtime MongoDB secrets from uat cluster"
+    echo -e "  ${GREEN}uat-get${NC} prometheus - Print Prometheus basic-auth htpasswd line (shared monitor ns)"
+    echo -e "  ${GREEN}prod-get${NC} elb - Print AWS Load Balancer DNS name for prod app ALB (elb-react-eks-prod)"
+    echo -e "  ${GREEN}prod-get${NC} mongodb - Print runtime MongoDB secrets from prod cluster"
+    echo -e "  ${GREEN}prod-get${NC} prometheus - Print Prometheus basic-auth htpasswd line (shared monitor ns)"
+    echo ""
+    echo -e "${YELLOW}Reset Password:${NC}"
+    echo -e "  ${GREEN}dev-resetpw${NC} mongodb       - Rotate MongoDB app password (dev)"
+    echo -e "  ${GREEN}dev-resetpw${NC} mongodb-root  - Rotate MongoDB root password (dev)"
+    echo -e "  ${GREEN}dev-resetpw${NC} mongodb-both  - Rotate MongoDB app + root passwords (dev)"
+    echo -e "  ${GREEN}dev-resetpw${NC} prometheus    - Rotate Prometheus basic-auth password (dev, shared instance)"
+    echo -e "  ${GREEN}uat-resetpw${NC} mongodb       - Rotate MongoDB app password (uat)"
+    echo -e "  ${GREEN}uat-resetpw${NC} mongodb-root  - Rotate MongoDB root password (uat)"
+    echo -e "  ${GREEN}uat-resetpw${NC} mongodb-both  - Rotate MongoDB app + root passwords (uat)"
+    echo -e "  ${GREEN}prod-resetpw${NC} mongodb       - Rotate MongoDB app password (prod)"
+    echo -e "  ${GREEN}prod-resetpw${NC} mongodb-root  - Rotate MongoDB root password (prod)"
+    echo -e "  ${GREEN}prod-resetpw${NC} mongodb-both  - Rotate MongoDB app + root passwords (prod)"
     echo ""
     echo -e "${YELLOW}Help:${NC}"
-    echo -e "  ${GREEN}--help${NC}   - Show global help"
-    echo -e "  ${GREEN}dev-help${NC} - Show DEV environment help"
-    echo -e "  ${GREEN}uat-help${NC} - Show UAT environment help"
+    echo -e "  ${GREEN}--help${NC}    - Show global help"
+    echo -e "  ${GREEN}dev-help${NC}  - Show DEV environment help"
+    echo -e "  ${GREEN}uat-help${NC}  - Show UAT environment help"
+    echo -e "  ${GREEN}prod-help${NC} - Show PROD environment help"
     print_available_services
     echo ""
     echo -e "${YELLOW}Examples:${NC}"
@@ -1600,7 +1979,7 @@ show_help() {
     echo "  ./an-deploy all -y"
     echo "  ./an-deploy all --dry-run"
     echo "  ./an-deploy all -y --dry-run"
-    echo "  ./an-deploy destroy all"
+    echo "  ./an-deploy destroy all -l"
     echo "  ./an-deploy dev-destroy bootstrap"
     echo "  ./an-deploy dev-validate"
     echo "  ./an-deploy dev-validate all"
@@ -1608,12 +1987,14 @@ show_help() {
     echo "  ./an-deploy dev-init networking ecr"
     echo "  ./an-deploy dev-apply all"
     echo "  ./an-deploy dev-svc-plan eks"
+    echo "  ./an-deploy dev-recover receiver-nlb"
     echo "  ./an-deploy dev eks eks-alb"
     echo "  ./an-deploy dev all -y --dry-run"
     echo "  ./an-deploy dev networking --dry-run"
     echo "  ./an-deploy dev-destroy all"
     echo "  ./an-deploy dev-get elb"
     echo "  ./an-deploy dev-get mongodb"
+    echo "  ./an-deploy dev-get prometheus"
     echo "  ./an-deploy uat-plan secrets"
     echo "  ./an-deploy uat-plan ecr"
     echo "  ./an-deploy uat-apply all"
@@ -1621,6 +2002,17 @@ show_help() {
     echo "  ./an-deploy uat all -y --dry-run"
     echo "  ./an-deploy uat-get elb"
     echo "  ./an-deploy uat-get mongodb"
+    echo "  ./an-deploy uat-get prometheus"
+    echo "  ./an-deploy dev-resetpw mongodb"
+    echo "  ./an-deploy uat-resetpw mongodb-root"
+    echo "  ./an-deploy prod-resetpw mongodb-both"
+    echo "  ./an-deploy prod-plan all"
+    echo "  ./an-deploy prod networking ecr"
+    echo "  ./an-deploy prod eks eks-alb"
+    echo "  ./an-deploy prod all -y --dry-run"
+    echo "  ./an-deploy prod-destroy all"
+    echo "  ./an-deploy prod-get elb"
+    echo "  ./an-deploy prod-get mongodb"
     echo ""
     echo -e "${YELLOW}Note:${NC} For init/validate/plan/apply/deploy/destroy, ${CYAN}all${NC} must be used alone among service selectors; deploy flags ${CYAN}-y${NC} and ${CYAN}--dry-run${NC} are allowed. ${CYAN}bootstrap${NC} is supported only for dev-destroy and must be used alone."
 }
@@ -1646,8 +2038,16 @@ show_env_help() {
     echo -e "  ${GREEN}${env}${NC} <s1> [s2]|all [-y] [--dry-run] - Plan + apply selected service(s), or all; --dry-run plans only"
     echo -e "  ${GREEN}${env}-destroy${NC} <s1> [s2]|all|bootstrap - Destroy selected service(s), all, or bootstrap"
     echo -e "  ${GREEN}${env}-svc-plan${NC} <s>           - Show saved service plan"
+    echo -e "  ${GREEN}${env}-recover${NC}  <s>           - Recover orphaned AWS resources into terraform state"
     echo -e "  ${GREEN}${env}-get${NC} elb               - Print AWS Load Balancer DNS name"
     echo -e "  ${GREEN}${env}-get${NC} mongodb           - Print runtime MongoDB secrets from ${env} cluster"
+    echo -e "  ${GREEN}${env}-get${NC} prometheus        - Print Prometheus basic-auth htpasswd line"
+    echo -e "  ${GREEN}${env}-resetpw${NC} mongodb       - Rotate MongoDB app password"
+    echo -e "  ${GREEN}${env}-resetpw${NC} mongodb-root  - Rotate MongoDB root password"
+    echo -e "  ${GREEN}${env}-resetpw${NC} mongodb-both  - Rotate MongoDB app + root passwords"
+    if [[ "$env" == "dev" ]]; then
+        echo -e "  ${GREEN}${env}-resetpw${NC} prometheus    - Rotate Prometheus basic-auth password (shared dev+uat instance)"
+    fi
     if [[ "$env" == "uat" ]]; then
         echo ""
         echo -e "${YELLOW}UAT Notes:${NC}"
@@ -1679,10 +2079,13 @@ fetch_k8s_secret_field() {
     local secret="$2"
     local key="$3"
     local namespace="$4"
+    local kctx="${5:-}"
     local encoded
     local decoded
+    local ctx_flag=""
+    [[ -n "$kctx" ]] && ctx_flag="--context=$kctx"
 
-    encoded="$(kubectl -n "$namespace" get secret "$secret" -o "jsonpath={.data.${key}}" 2>&1)" || {
+    encoded="$(kubectl $ctx_flag -n "$namespace" get secret "$secret" -o "jsonpath={.data.${key}}" 2>&1)" || {
         echo -e "${RED}ERROR: Failed to read ${label} or Non-Exist (kubectl error on secret '${secret}')${NC}"
         return 1
     }
@@ -1703,14 +2106,32 @@ fetch_k8s_secret_field() {
 print_mongodb_runtime_secrets_for_env() {
     local env="$1"
     local env_name
+    local kctx=""
+    if [[ "$env" == "prod" ]]; then
+        kctx="$(kubectl config get-contexts -o name 2>/dev/null | grep 'cluster/eks-react-prod$' | head -1)"
+        [[ -z "$kctx" ]] && { echo -e "${RED}ERROR: kubectl context for eks-react-prod not found. Run: aws eks update-kubeconfig --name eks-react-prod${NC}" >&2; return 1; }
+    fi
 
     env_name="$(env_upper "$env")"
     echo -e "${BLUE}Retrieving runtime MongoDB secrets from ${env} cluster...${NC}"
     echo ""
     echo -e "${BLUE}${env_name}:${NC}"
-    fetch_k8s_secret_field "App Password" "mongo-app-secret" "MONGO_APP_PASSWORD" "$env" || return 1
-    fetch_k8s_secret_field "Root Password" "mongo-root-secret" "MONGO_INITDB_ROOT_PASSWORD" "$env" || return 1
-    fetch_k8s_secret_field "MongoDB URI" "mongo-app-secret" "MONGODB_URI" "$env" || return 1
+    fetch_k8s_secret_field "App Password" "mongo-app-secret" "MONGO_APP_PASSWORD" "$env" "$kctx" || return 1
+    fetch_k8s_secret_field "Root Password" "mongo-root-secret" "MONGO_INITDB_ROOT_PASSWORD" "$env" "$kctx" || return 1
+    fetch_k8s_secret_field "MongoDB URI" "mongo-app-secret" "MONGODB_URI" "$env" "$kctx" || return 1
+}
+
+print_prometheus_basic_auth_for_env() {
+    local env="$1"
+    local env_name
+    local ns="monitor"
+    env_name="$(env_upper "$env")"
+    echo -e "${BLUE}Retrieving Prometheus basic-auth from ${env} cluster...${NC}"
+    echo ""
+    echo -e "${BLUE}${env_name}:${NC}"
+    fetch_k8s_secret_field "Basic Auth" "prometheus-basic-auth" "auth" "$ns" || return 1
+    echo -e "${CYAN}URL:${NC} https://prometheus-demo.h0m3.xyz"
+    echo -e "${YELLOW}NOTE: value is htpasswd line (admin:\$2y\$...). To reset password and get plaintext, run: ./an-deploy dev-resetpw prometheus${NC}"
 }
 
 # ========================================
@@ -1750,13 +2171,13 @@ run_dev_get_command() {
 
     if [[ -z "$target" ]]; then
         echo -e "${RED}ERROR: Missing required argument${NC}"
-        echo -e "${YELLOW}Usage: ./an-deploy dev-get <elb|mongodb>${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy dev-get <elb|mongodb|prometheus>${NC}"
         return 1
     fi
 
     if [[ $# -gt 0 ]]; then
         echo -e "${RED}ERROR: Too many arguments${NC}"
-        echo -e "${YELLOW}Usage: ./an-deploy dev-get <elb|mongodb>${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy dev-get <elb|mongodb|prometheus>${NC}"
         return 1
     fi
 
@@ -1764,7 +2185,7 @@ run_dev_get_command() {
 
     case "$target" in
         "elb")
-            fetch_elb_dns_name "us-east-1" "demo-react-eks-dev-uat"
+            fetch_elb_dns_name "us-east-1" "elb-react-eks-dev-uat"
             ;;
         "mongodb")
             command -v kubectl >/dev/null 2>&1 || {
@@ -1773,9 +2194,61 @@ run_dev_get_command() {
             }
             print_mongodb_runtime_secrets_for_env "dev"
             ;;
+        "prometheus")
+            command -v kubectl >/dev/null 2>&1 || {
+                echo -e "${RED}ERROR: kubectl not installed${NC}"
+                return 1
+            }
+            print_prometheus_basic_auth_for_env "dev"
+            ;;
         *)
             echo -e "${RED}ERROR: Unsupported target '${target}'${NC}"
-            echo -e "${YELLOW}Supported: elb, mongodb${NC}"
+            echo -e "${YELLOW}Supported: elb, mongodb, prometheus${NC}"
+            return 1
+            ;;
+    esac
+}
+
+run_dev_resetpw_command() {
+    local target="${1:-}"
+    shift || true
+
+    if [[ -z "$target" ]]; then
+        echo -e "${RED}ERROR: Missing required argument${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy dev-resetpw <mongodb|mongodb-root|mongodb-both|prometheus>${NC}"
+        return 1
+    fi
+
+    if [[ $# -gt 0 ]]; then
+        echo -e "${RED}ERROR: Too many arguments${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy dev-resetpw <mongodb|mongodb-root|mongodb-both|prometheus>${NC}"
+        return 1
+    fi
+
+    validate_environment "dev" || return 1
+
+    local resetpw_script="${0%/*}/resetpw-ssm.sh"
+    if [[ ! -x "$resetpw_script" ]]; then
+        echo -e "${RED}ERROR: resetpw-ssm.sh not found or not executable at ${resetpw_script}${NC}"
+        return 1
+    fi
+
+    case "$target" in
+        "mongodb")
+            "$resetpw_script" dev mongodb
+            ;;
+        "mongodb-root")
+            "$resetpw_script" --root dev mongodb
+            ;;
+        "mongodb-both")
+            "$resetpw_script" --both dev mongodb
+            ;;
+        "prometheus")
+            "$resetpw_script" dev prometheus
+            ;;
+        *)
+            echo -e "${RED}ERROR: Unsupported target '${target}'${NC}"
+            echo -e "${YELLOW}Supported: mongodb, mongodb-root, mongodb-both, prometheus${NC}"
             return 1
             ;;
     esac
@@ -1790,13 +2263,13 @@ run_uat_get_command() {
 
     if [[ -z "$target" ]]; then
         echo -e "${RED}ERROR: Missing required argument${NC}"
-        echo -e "${YELLOW}Usage: ./an-deploy uat-get <elb|mongodb>${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy uat-get <elb|mongodb|prometheus>${NC}"
         return 1
     fi
 
     if [[ $# -gt 0 ]]; then
         echo -e "${RED}ERROR: Too many arguments${NC}"
-        echo -e "${YELLOW}Usage: ./an-deploy uat-get <elb|mongodb>${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy uat-get <elb|mongodb|prometheus>${NC}"
         return 1
     fi
 
@@ -1804,8 +2277,9 @@ run_uat_get_command() {
 
     case "$target" in
         "elb")
-            echo -e "${YELLOW}Note: UAT shares ELB with DEV. Name: demo-react-eks-dev-uat${NC}"
-            fetch_elb_dns_name "us-east-1" "demo-react-eks-dev-uat"
+            echo -e "${YELLOW}Note: UAT shares ELB with DEV. Name: elb-react-eks-dev-uat${NC}"
+            echo -e "${YELLOW}UAT domain: uat-react-eks.h0m3.xyz${NC}"
+            fetch_elb_dns_name "us-east-1" "elb-react-eks-dev-uat"
             ;;
         "mongodb")
             command -v kubectl >/dev/null 2>&1 || {
@@ -1814,9 +2288,58 @@ run_uat_get_command() {
             }
             print_mongodb_runtime_secrets_for_env "uat"
             ;;
+        "prometheus")
+            command -v kubectl >/dev/null 2>&1 || {
+                echo -e "${RED}ERROR: kubectl not installed${NC}"
+                return 1
+            }
+            print_prometheus_basic_auth_for_env "uat"
+            ;;
         *)
             echo -e "${RED}ERROR: Unsupported target '${target}'${NC}"
-            echo -e "${YELLOW}Supported: elb, mongodb${NC}"
+            echo -e "${YELLOW}Supported: elb, mongodb, prometheus${NC}"
+            return 1
+            ;;
+    esac
+}
+
+run_uat_resetpw_command() {
+    local target="${1:-}"
+    shift || true
+
+    if [[ -z "$target" ]]; then
+        echo -e "${RED}ERROR: Missing required argument${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy uat-resetpw <mongodb|mongodb-root|mongodb-both>${NC}"
+        return 1
+    fi
+
+    if [[ $# -gt 0 ]]; then
+        echo -e "${RED}ERROR: Too many arguments${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy uat-resetpw <mongodb|mongodb-root|mongodb-both>${NC}"
+        return 1
+    fi
+
+    validate_environment "uat" || return 1
+
+    local resetpw_script="${0%/*}/resetpw-ssm.sh"
+    if [[ ! -x "$resetpw_script" ]]; then
+        echo -e "${RED}ERROR: resetpw-ssm.sh not found or not executable at ${resetpw_script}${NC}"
+        return 1
+    fi
+
+    case "$target" in
+        "mongodb")
+            "$resetpw_script" uat mongodb
+            ;;
+        "mongodb-root")
+            "$resetpw_script" --root uat mongodb
+            ;;
+        "mongodb-both")
+            "$resetpw_script" --both uat mongodb
+            ;;
+        *)
+            echo -e "${RED}ERROR: Unsupported target '${target}'${NC}"
+            echo -e "${YELLOW}Supported: mongodb, mongodb-root, mongodb-both${NC}"
             return 1
             ;;
     esac
@@ -1824,6 +2347,99 @@ run_uat_get_command() {
 
 show_uat_help() {
     show_env_help "uat"
+}
+
+# ========================================
+# Prod Get (Runtime Info Retrieval) Functions
+# ========================================
+run_prod_get_command() {
+    local target="${1:-}"
+    shift || true
+
+    if [[ -z "$target" ]]; then
+        echo -e "${RED}ERROR: Missing required argument${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy prod-get <elb|mongodb|prometheus>${NC}"
+        return 1
+    fi
+
+    if [[ $# -gt 0 ]]; then
+        echo -e "${RED}ERROR: Too many arguments${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy prod-get <elb|mongodb|prometheus>${NC}"
+        return 1
+    fi
+
+    validate_environment "prod" || return 1
+
+    case "$target" in
+        "elb")
+            fetch_elb_dns_name "us-east-1" "elb-react-eks-prod"
+            ;;
+        "mongodb")
+            command -v kubectl >/dev/null 2>&1 || {
+                echo -e "${RED}ERROR: kubectl not installed${NC}"
+                return 1
+            }
+            print_mongodb_runtime_secrets_for_env "prod"
+            ;;
+        "prometheus")
+            command -v kubectl >/dev/null 2>&1 || {
+                echo -e "${RED}ERROR: kubectl not installed${NC}"
+                return 1
+            }
+            print_prometheus_basic_auth_for_env "prod"
+            ;;
+        *)
+            echo -e "${RED}ERROR: Unsupported target '${target}'${NC}"
+            echo -e "${YELLOW}Supported: elb, mongodb, prometheus${NC}"
+            return 1
+            ;;
+    esac
+}
+
+run_prod_resetpw_command() {
+    local target="${1:-}"
+    shift || true
+
+    if [[ -z "$target" ]]; then
+        echo -e "${RED}ERROR: Missing required argument${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy prod-resetpw <mongodb|mongodb-root|mongodb-both>${NC}"
+        return 1
+    fi
+
+    if [[ $# -gt 0 ]]; then
+        echo -e "${RED}ERROR: Too many arguments${NC}"
+        echo -e "${YELLOW}Usage: ./an-deploy prod-resetpw <mongodb|mongodb-root|mongodb-both>${NC}"
+        return 1
+    fi
+
+    validate_environment "prod" || return 1
+
+    local resetpw_script="${0%/*}/resetpw-ssm.sh"
+    if [[ ! -x "$resetpw_script" ]]; then
+        echo -e "${RED}ERROR: resetpw-ssm.sh not found or not executable at ${resetpw_script}${NC}"
+        return 1
+    fi
+
+    case "$target" in
+        "mongodb")
+            "$resetpw_script" prod mongodb
+            ;;
+        "mongodb-root")
+            "$resetpw_script" --root prod mongodb
+            ;;
+        "mongodb-both")
+            "$resetpw_script" --both prod mongodb
+            ;;
+        *)
+            echo -e "${RED}ERROR: Unsupported target '${target}'${NC}"
+            echo -e "${YELLOW}Supported: mongodb, mongodb-root, mongodb-both${NC}"
+            return 1
+            ;;
+    esac
+}
+
+show_prod_help() {
+    show_env_help "prod"
 }
 
 # ========================================
@@ -1873,10 +2489,21 @@ main() {
             validate_environment "dev" || exit 1
             run_show_service_plan_command "dev" "$@"
             ;;
+        "dev-recover")
+            validate_environment "dev" || exit 1
+            run_recover_command "dev" "$@"
+            ;;
         "dev-get")
             run_dev_get_command "$@"
             ;;
+        "dev-resetpw")
+            run_dev_resetpw_command "$@"
+            ;;
 
+        "uat-recover")
+            validate_environment "uat" || exit 1
+            run_recover_command "uat" "$@"
+            ;;
         "uat-init")
             validate_prerequisites || exit 1
             validate_environment "uat" || exit 1
@@ -1914,6 +2541,59 @@ main() {
             ;;
         "uat-get")
             run_uat_get_command "$@"
+            ;;
+        "uat-resetpw")
+            run_uat_resetpw_command "$@"
+            ;;
+
+        "prod-init")
+            validate_prerequisites || exit 1
+            validate_environment "prod" || exit 1
+            run_init_command "prod" "$@"
+            ;;
+        "prod-validate")
+            validate_prerequisites || exit 1
+            validate_environment "prod" || exit 1
+            run_validate_command "prod" "$@"
+            ;;
+        "prod-plan")
+            validate_prerequisites || exit 1
+            validate_environment "prod" || exit 1
+            run_plan_command "prod" "$@"
+            ;;
+        "prod-apply")
+            validate_prerequisites || exit 1
+            validate_environment "prod" || exit 1
+            run_apply_command "prod" "$@"
+            ;;
+        "prod")
+            validate_prerequisites || exit 1
+            validate_environment "prod" || exit 1
+            run_deploy_command "prod" "$@"
+            ;;
+        "prod-destroy")
+            validate_prerequisites || exit 1
+            validate_environment "prod" || exit 1
+            run_destroy_command "prod" "$@"
+            ;;
+        "prod-svc-plan")
+            validate_prerequisites || exit 1
+            validate_environment "prod" || exit 1
+            run_show_service_plan_command "prod" "$@"
+            ;;
+        "prod-get")
+            run_prod_get_command "$@"
+            ;;
+        "prod-resetpw")
+            run_prod_resetpw_command "$@"
+            ;;
+        "prod-recover")
+            echo -e "${RED}ERROR: Recovery not yet supported for env 'prod'${NC}"
+            exit 1
+            ;;
+        "prod-help")
+            validate_no_args "prod-help" "$@" || exit 1
+            show_prod_help
             ;;
 
         "all")

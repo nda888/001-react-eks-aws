@@ -6,18 +6,21 @@
 | --- | --- |
 | Runtime | Node 22 |
 | Framework | Express 4 |
-| Database | MongoDB 8.0 (via Mongoose 6) |
+| Database | MongoDB 8.0 (via Mongoose 8) |
+| Security | Helmet, express-rate-limit, CORS |
 | Dev runner | Nodemon |
 
 ## Structure
 
 ```
 backend/
-├── Dockerfile               # Production image (node:22-bookworm-slim)
-├── Dockerfile-local          # Local dev image (same as Dockerfile)
+├── Dockerfile                # Node 22 image running `npm run dev` (Nodemon)
+├── Dockerfile-local          # Same as Dockerfile; used by compose.yaml
+├── .dockerignore
 ├── server.js                 # Entry point
-├── config/                   # App config
+├── config/                   # App config (config.js, config.json, messages.js)
 ├── db/                       # Mongoose connection (retry logic)
+├── middleware/               # Auth middleware (requireAuth)
 ├── models/todos/             # Todo model
 ├── routes/                   # API routes
 ├── utils/helpers/            # Logger, response helpers
@@ -26,7 +29,7 @@ backend/
 
 ## API routes
 
-Base path: `/api`
+Base path: `/api`. All `/api` routes require `Authorization: Bearer <API_TOKEN>`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -44,6 +47,7 @@ Required via `.env`:
 | Variable | Purpose |
 | --- | --- |
 | `MONGODB_URI` | MongoDB connection string |
+| `API_TOKEN` | Bearer token required by `/api` routes |
 | `CORS_ORIGINS` | (optional) Comma-separated allowed origins, defaults to `http://localhost:3000` |
 | `PORT` | (optional) Server port, defaults to `3000` |
 
@@ -66,3 +70,5 @@ npm start        # node server.js
 docker build -t backend .
 docker run -p 3000:3000 --env-file .env backend
 ```
+
+Note: the provided `Dockerfile` runs `npm run dev`; override `CMD` or build a dedicated image for a true production start.

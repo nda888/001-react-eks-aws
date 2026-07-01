@@ -52,7 +52,7 @@ export default class TodoList extends React.Component {
       this.renderTodos(todos)
     ) : (
       <div className="alert alert-primary" role="alert">
-        No Todos to display
+        Your List Is Empty - Add One
       </div>
     );
   }

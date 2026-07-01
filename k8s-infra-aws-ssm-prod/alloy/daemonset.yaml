@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: alloy
+  namespace: prod
+  labels:
+    app: alloy
+spec:
+  selector:
+    matchLabels:
+      app: alloy
+  template:
+    metadata:
+      labels:
+        app: alloy
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "12345"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: alloy
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.16.2
+          args:
+            - run
+            - --server.http.listen-addr=0.0.0.0:12345
+            - --storage.path=/var/lib/alloy/data
+            - /etc/alloy/config.alloy
+          ports:
+            - name: http
+              containerPort: 12345
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 12345
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 12345
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alloy
+            - name: data
+              mountPath: /var/lib/alloy
+            - name: pods
+              mountPath: /var/log/pods
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: alloy-config
+        - name: data
+          hostPath:
+            path: /var/lib/alloy
+            type: DirectoryOrCreate
+        - name: pods
+          hostPath:
+            path: /var/log/pods
+            type: Directory

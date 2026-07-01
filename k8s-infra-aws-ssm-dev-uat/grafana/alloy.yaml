@@ -1,0 +1,177 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alloy
+  namespace: monitor
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: monitor-alloy
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+      - nodes/proxy
+      - services
+      - endpoints
+      - pods
+      - namespaces
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: monitor-alloy
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: monitor-alloy
+subjects:
+  - kind: ServiceAccount
+    name: alloy
+    namespace: monitor
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config
+  namespace: monitor
+data:
+  config.alloy: |
+    discovery.kubernetes "pods" {
+      role = "pod"
+
+      namespaces {
+        names = ["dev", "uat", "monitor"]
+      }
+    }
+
+    discovery.relabel "pod_logs" {
+      targets = discovery.kubernetes.pods.targets
+
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "container"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_app"]
+        target_label  = "app"
+      }
+
+      rule {
+        source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+        separator     = "/"
+        target_label  = "__path__"
+        replacement   = "/var/log/pods/*$1/*.log"
+      }
+    }
+
+    local.file_match "pod_logs" {
+      path_targets = discovery.relabel.pod_logs.output
+    }
+
+    loki.source.file "pod_logs" {
+      targets    = local.file_match.pod_logs.targets
+      forward_to = [loki.process.pod_logs.receiver]
+    }
+
+    loki.process "pod_logs" {
+      forward_to = [loki.write.default.receiver]
+
+      stage.cri {}
+    }
+
+    loki.write "default" {
+      endpoint {
+        url = "http://loki:3100/loki/api/v1/push"
+        tenant_id = "dev-uat"
+      }
+    }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: alloy
+  namespace: monitor
+  labels:
+    app: alloy
+spec:
+  selector:
+    matchLabels:
+      app: alloy
+  template:
+    metadata:
+      labels:
+        app: alloy
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "12345"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: alloy
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.16.2
+          args:
+            - run
+            - --server.http.listen-addr=0.0.0.0:12345
+            - --storage.path=/var/lib/alloy/data
+            - /etc/alloy/config.alloy
+          ports:
+            - name: http
+              containerPort: 12345
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "500m"
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 12345
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 12345
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alloy
+            - name: data
+              mountPath: /var/lib/alloy
+            - name: pods
+              mountPath: /var/log/pods
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: alloy-config
+        - name: data
+          hostPath:
+            path: /var/lib/alloy
+            type: DirectoryOrCreate
+        - name: pods
+          hostPath:
+            path: /var/log/pods
+            type: Directory

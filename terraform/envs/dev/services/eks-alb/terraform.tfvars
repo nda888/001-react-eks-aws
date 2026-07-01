@@ -1,5 +1,5 @@
 aws_region   = "us-east-1"
-cluster_name = "demo-eks-dev"
+cluster_name = "eks-react-dev-uat"
 environment  = "dev"
 state_bucket = "demo-react-express-s3"
 

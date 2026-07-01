@@ -13,7 +13,7 @@ variable "state_bucket" {
 variable "cluster_name" {
   description = "EKS cluster name"
   type        = string
-  default     = "demo-eks-dev"
+  default     = "eks-react-dev-uat"
 }
 
 variable "environment" {
@@ -67,25 +67,25 @@ variable "node_max_size" {
 variable "ebs_csi_addon_version" {
   description = "Version of the EBS CSI driver addon"
   type        = string
-  default     = "v1.60.0-eksbuild.1"
+  default     = "v1.62.0-eksbuild.1"
 }
 
 variable "vpc_cni_addon_version" {
   description = "Version of the VPC CNI addon"
   type        = string
-  default     = "v1.20.5-eksbuild.1"
+  default     = "v1.22.2-eksbuild.1"
 }
 
 variable "coredns_addon_version" {
   description = "Version of the CoreDNS addon"
   type        = string
-  default     = "v1.11.4-eksbuild.33"
+  default     = "v1.14.3-eksbuild.3"
 }
 
 variable "kube_proxy_addon_version" {
   description = "Version of the kube-proxy addon"
   type        = string
-  default     = "v1.32.13-eksbuild.5"
+  default     = "v1.36.0-eksbuild.9"
 }
 
 # --- Stateful workload node group (dedicated on-demand, specific AZ for EBS volume affinity) ---

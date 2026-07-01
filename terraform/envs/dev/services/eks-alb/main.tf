@@ -42,6 +42,15 @@ data "terraform_remote_state" "eks" {
   }
 }
 
+data "terraform_remote_state" "prod_eks" {
+  backend = "s3"
+  config = {
+    bucket = var.state_bucket
+    key    = "prod/services/eks/terraform.tfstate"
+    region = var.aws_region
+  }
+}
+
 data "aws_eks_cluster_auth" "main" {
   name = data.terraform_remote_state.eks.outputs.cluster_name
 }
@@ -53,6 +62,11 @@ data "aws_eks_cluster" "main" {
 # VPC CIDR used for ALB egress rules to pod targets
 data "aws_vpc" "main" {
   id = data.terraform_remote_state.networking.outputs.vpc_id
+}
+
+data "aws_acm_certificate" "app" {
+  domain   = var.app_domain_name
+  statuses = ["ISSUED"]
 }
 
 
@@ -99,13 +113,13 @@ module "alb_controller" {
 }
 
 resource "aws_security_group" "alb_frontend" {
-  name        = "demo-eks-dev-alb-frontend"
+  name        = "eks-react-dev-uat-alb-frontend"
   name_prefix = null
   description = "ALB frontend SG - internet-facing rules managed by AWS Load Balancer Controller"
   vpc_id      = data.terraform_remote_state.networking.outputs.vpc_id
 
   tags = merge(local.common_tags, {
-    Name = "demo-eks-dev-alb-frontend"
+    Name = "eks-react-dev-uat-alb-frontend"
   })
 
   lifecycle {
@@ -114,13 +128,13 @@ resource "aws_security_group" "alb_frontend" {
 }
 
 resource "aws_security_group" "alb_backend" {
-  name        = "demo-eks-dev-alb-backend"
+  name        = "eks-react-dev-uat-alb-backend"
   name_prefix = null
   description = "ALB backend SG - worker-to-pod rules managed by AWS Load Balancer Controller"
   vpc_id      = data.terraform_remote_state.networking.outputs.vpc_id
 
   tags = merge(local.common_tags, {
-    Name = "demo-eks-dev-alb-backend"
+    Name = "eks-react-dev-uat-alb-backend"
   })
 
   lifecycle {
@@ -152,6 +166,26 @@ resource "aws_security_group_rule" "alb_frontend_https_ingress" {
   description       = "Allow public HTTPS to ALB"
 }
 
+resource "aws_security_group_rule" "alb_frontend_http_ingress_prod" {
+  type                     = "ingress"
+  security_group_id        = aws_security_group.alb_frontend.id
+  protocol                 = "tcp"
+  from_port                = 80
+  to_port                  = 80
+  source_security_group_id = data.terraform_remote_state.prod_eks.outputs.cluster_security_group_id
+  description              = "Allow HTTP from prod EKS cluster SG for remote_write"
+}
+
+resource "aws_security_group_rule" "alb_frontend_https_ingress_prod" {
+  type                     = "ingress"
+  security_group_id        = aws_security_group.alb_frontend.id
+  protocol                 = "tcp"
+  from_port                = 443
+  to_port                  = 443
+  source_security_group_id = data.terraform_remote_state.prod_eks.outputs.cluster_security_group_id
+  description              = "Allow HTTPS from prod EKS cluster SG for remote_write"
+}
+
 resource "aws_security_group_rule" "alb_frontend_egress_app_targets" {
   type              = "egress"
   security_group_id = aws_security_group.alb_frontend.id
@@ -177,12 +211,16 @@ resource "kubernetes_namespace" "dev" {
   metadata {
     name = "dev"
   }
+
+  depends_on = [module.alb_controller]
 }
 
 resource "kubernetes_namespace" "uat" {
   metadata {
     name = "uat"
   }
+
+  depends_on = [module.alb_controller]
 }
 
 # --- ConfigMap for Kustomize to inject SG IDs into Ingress annotations ---

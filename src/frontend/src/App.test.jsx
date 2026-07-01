@@ -5,6 +5,7 @@ import App from './App';
 
 vi.mock('axios', () => ({
   default: {
+    defaults: { headers: { common: {} } },
     get: vi.fn(() => Promise.resolve({ data: { data: [] } })),
     post: vi.fn(() => Promise.resolve({ data: { data: {} } })),
     delete: vi.fn(() => Promise.resolve()),

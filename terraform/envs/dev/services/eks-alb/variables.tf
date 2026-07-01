@@ -13,7 +13,7 @@ variable "state_bucket" {
 variable "cluster_name" {
   description = "EKS cluster name"
   type        = string
-  default     = "demo-eks-dev"
+  default     = "eks-react-dev-uat"
 }
 
 variable "environment" {
@@ -25,13 +25,12 @@ variable "environment" {
 variable "app_domain_name" {
   description = "Public domain routed to the Kubernetes ALB Ingress"
   type        = string
-  default     = "demo-react-eks.h0m3.xyz"
+  default     = "dev-react-eks.h0m3.xyz"
 }
 
 variable "acm_certificate_arn" {
   description = "ACM certificate ARN used by the Kubernetes ALB Ingress"
   type        = string
-  default     = "arn:aws:acm:us-east-1:654654604308:certificate/ed9119c0-c6a7-49ac-84cf-ded38b29491c"
 }
 
 variable "alb_frontend_sg_id" {

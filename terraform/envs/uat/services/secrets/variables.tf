@@ -46,6 +46,18 @@ variable "grafana_image_render_ssm_prefix" {
   default     = "/demo-eks-dev/image-render"
 }
 
+variable "app_ssm_prefix" {
+  description = "SSM parameter prefix for application secrets (API token)"
+  type        = string
+  default     = "/demo-eks-uat/app"
+}
+
+variable "monitor_ssm_prefix" {
+  description = "SSM parameter prefix for shared monitor stack secrets (Grafana admin + Prometheus basic-auth)"
+  type        = string
+  default     = "/demo-eks-dev/monitor"
+}
+
 variable "shared_external_secrets_role_name" {
   description = "Existing External Secrets Operator IAM role used by the shared ClusterSecretStore"
   type        = string
@@ -74,16 +86,4 @@ variable "mongo_host" {
   description = "MongoDB in-cluster host and port used in app connection URI"
   type        = string
   default     = "mongo:27017"
-}
-
-variable "monitoring_ssm_prefix" {
-  description = "SSM parameter prefix for monitoring secrets (Prometheus basic-auth)"
-  type        = string
-  default     = "/demo-eks-uat/monitoring"
-}
-
-variable "prometheus_basic_auth_username" {
-  description = "Username for Prometheus basic-auth ingress (no secret)"
-  type        = string
-  default     = "admin"
 }

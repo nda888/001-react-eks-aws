@@ -1,0 +1,34 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mongo-credential-rotator
+  namespace: prod
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["mongo-app-secret", "mongo-root-secret"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["mongo-root-password-last-known", "mongo-app-password-last-known"]
+    verbs: ["get", "create", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: ["external-secrets.io"]
+    resources: ["externalsecrets"]
+    verbs: ["get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mongo-credential-rotator
+  namespace: prod
+subjects:
+  - kind: ServiceAccount
+    name: mongo-credential-rotator
+    namespace: prod
+roleRef:
+  kind: Role
+  name: mongo-credential-rotator
+  apiGroup: rbac.authorization.k8s.io

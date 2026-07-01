@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "cluster_name" {
   description = "EKS cluster name for subnet tagging"
   type        = string
-  default     = "demo-eks-dev"
+  default     = "eks-react-dev-uat"
 }
 
 variable "vpc_id" {

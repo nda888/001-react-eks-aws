@@ -30,7 +30,7 @@ app.use(
       if (allowedOrigins.includes(origin)) return callback(null, true);
       callback(new Error("Not allowed by CORS"));
     },
-  })
+  }),
 );
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: false, limit: "10kb" }));

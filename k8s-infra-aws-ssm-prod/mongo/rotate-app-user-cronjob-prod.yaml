@@ -1,0 +1,77 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rotate-mongo-app-user
+  namespace: prod
+spec:
+  schedule: "0 3 1 * *"
+  timeZone: "Asia/Ho_Chi_Minh"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 600
+      template:
+        spec:
+          serviceAccountName: mongo-credential-rotator
+          restartPolicy: Never
+          containers:
+            - name: rotate
+              image: prod-mongo-rotator:latest
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 1001
+              command:
+                - /bin/bash
+                - /scripts/rotate-user.sh
+              env:
+                - name: SSM_PREFIX
+                  value: /demo-eks-prod/mongo
+                - name: AWS_REGION
+                  value: us-east-1
+                - name: NAMESPACE
+                  value: prod
+                - name: MONGO_HOST
+                  value: mongo:27017
+                - name: MONGO_DATABASE
+                  value: prod_be_db
+                - name: MONGO_INITDB_ROOT_USERNAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: mongo-root-secret
+                      key: MONGO_INITDB_ROOT_USERNAME
+                - name: MONGO_INITDB_ROOT_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: mongo-root-secret
+                      key: MONGO_INITDB_ROOT_PASSWORD
+                - name: MONGO_APP_USERNAME
+                  valueFrom:
+                    secretKeyRef:
+                      name: mongo-app-secret
+                      key: MONGO_APP_USERNAME
+                - name: MONGO_APP_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: mongo-app-secret
+                      key: MONGO_APP_PASSWORD
+                - name: HOME
+                  value: /tmp
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+          volumes:
+            - name: script
+              configMap:
+                name: mongo-rotate-script
+                defaultMode: 0755

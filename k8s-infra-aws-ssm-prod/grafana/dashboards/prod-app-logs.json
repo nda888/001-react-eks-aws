@@ -1,0 +1,83 @@
+{
+  "uid": "demo-prod-app-logs",
+  "title": "React App Logs",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "timezone": "Asia/Bangkok",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "logs",
+      "title": "Prod Backend API logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki-Prod"
+      },
+      "options": {
+        "showTime": true
+      },
+      "targets": [
+        {
+          "expr": "{namespace=\"prod\", app=\"backend\"}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "logs",
+      "title": "Prod Frontend logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki-Prod"
+      },
+      "options": {
+        "showTime": true
+      },
+      "targets": [
+        {
+          "expr": "{namespace=\"prod\", app=\"frontend\"}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      }
+    },
+    {
+      "type": "logs",
+      "title": "Prod MongoDB logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "Loki-Prod"
+      },
+      "options": {
+        "showTime": true
+      },
+      "targets": [
+        {
+          "expr": "{namespace=\"prod\", app=\"mongo\"}",
+          "refId": "A"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      }
+    }
+  ]
+}

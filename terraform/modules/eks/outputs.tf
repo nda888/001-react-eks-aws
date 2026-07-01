@@ -41,7 +41,7 @@ output "cluster_security_group_id" {
 
 output "cluster_security_group_name" {
   description = "Display Name tag intended for the AWS-generated EKS cluster security group"
-  value       = "eks-cluster-dev"
+  value       = var.cluster_name
 }
 
 output "stateful_node_group_name" {

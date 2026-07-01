@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const rateLimit = require("express-rate-limit");
 const serverResponses = require("../utils/helpers/responses");
 const messages = require("../config/messages");
+const { requireAuth } = require("../middleware/auth");
 const { Todo } = require("../models/todos/todo");
 
 const TODO_TEXT_MAX_LENGTH = 200;
@@ -36,8 +37,7 @@ const routes = (app) => {
   const listTodosLimiter = createRateLimiter(60 * 1000, 60);
   const createTodoLimiter = createRateLimiter(60 * 1000, 20);
   const deleteTodoLimiter = createRateLimiter(60 * 1000, 30);
-
-  router.post("/todos", createTodoLimiter, (req, res) => {
+  router.post("/todos", requireAuth, createTodoLimiter, (req, res) => {
     const text = parseTodoText(req.body.text);
     if (!text) {
       return serverResponses.sendError(res, messages.BAD_REQUEST);
@@ -58,7 +58,7 @@ const routes = (app) => {
       });
   });
 
-  router.get("/", listTodosLimiter, (req, res) => {
+  router.get("/", requireAuth, listTodosLimiter, (req, res) => {
     Todo.find({}, { __v: 0 })
       .then((todos) => {
         serverResponses.sendSuccess(res, messages.SUCCESSFUL, todos);
@@ -69,11 +69,12 @@ const routes = (app) => {
       });
   });
 
-  router.delete("/todos/:id", deleteTodoLimiter, (req, res) => {
+  router.delete("/todos/:id", requireAuth, deleteTodoLimiter, (req, res) => {
     if (!mongoose.isValidObjectId(req.params.id)) {
       return serverResponses.sendError(res, messages.BAD_REQUEST);
     }
 
+    // no ownership filter yet — add { ownerId: req.user.id } when JWT auth lands
     Todo.findByIdAndDelete(req.params.id)
       .then(() => {
         serverResponses.sendSuccess(res, messages.SUCCESSFUL_DELETE);

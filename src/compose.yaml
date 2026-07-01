@@ -1,5 +1,6 @@
 services:
   frontend:
+    container_name: frontend
     build:
       context: frontend
       dockerfile: Dockerfile-local
@@ -17,6 +18,7 @@ services:
       - backend
 
   backend:
+    container_name: backend
     restart: always
     build:
       context: backend
@@ -35,6 +37,7 @@ services:
     expose: 
       - 3000
   mongo:
+    container_name: mongo
     restart: always
     image: ${MONGO_IMAGE:-mongo:8.0.23}
     env_file:
