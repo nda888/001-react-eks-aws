@@ -26,7 +26,7 @@ exports.connect = (app) => {
       .catch((err) => {
         console.log(
           "MongoDB connection unsuccessful, retry after 2 seconds.",
-          err
+          err,
         );
         setTimeout(connectWithRetry, 2000);
       });

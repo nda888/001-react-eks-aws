@@ -44,6 +44,12 @@ variable "edge_public_subnet_azs" {
   default     = []
 }
 
+variable "internal_elb_subnet_ids" {
+  description = "Subnet IDs where the kubernetes.io/role/internal-elb tag is set. Restricts where the EKS in-tree LB provider places internal NLBs. The 3 chosen subnets host NLB nodes; the rest are untagged so the provider skips them. See plan-176."
+  type        = list(string)
+  default     = ["subnet-0d5b19984b533f703", "subnet-0ca21f0f484edd27d", "subnet-0fb4f83c51e6e3cc8"]
+}
+
 variable "tags" {
   description = "Common tags to apply to all resources"
   type        = map(string)

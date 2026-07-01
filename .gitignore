@@ -8,29 +8,34 @@ docs/*
 .terraform/
 .terraform.lock.hcl
 
-# Terraform local/sensitive values
+# --- Terraform safety net (plan-014) ---
+*.tfplan.json
+plan.out
+*.plan
+crash.log
+crash.*.log
+.terraformrc
+terraform.rc
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# --- Terraform: local/sensitive values (do not push) ---
 *.tfvars
 *.tfvars.json
 *.auto.tfvars
 *.auto.tfvars.json
 !*.tfvars.example
-!terraform.tfvars
 *.backend.hcl
-plan.out
-*.plan
-crash.log
-crash.*.log
-override.tf
-override.tf.json
-*_override.tf
-*_override.tf.json
-.terraformrc
-terraform.rc
+
+# --- Personal notes / scratch under terraform/ ---
+terraform/docs/
 
 # Secrets and environment
 .env
 .env.*
-!.env.example
+!**/.env.example
 *.pem
 *.key
 *.crt

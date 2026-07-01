@@ -1,0 +1,51 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: create-mongo-app-user
+  namespace: dev
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: create-app-user
+          image: mongo:8.0.23
+          imagePullPolicy: IfNotPresent
+          command:
+            - mongosh
+            - --quiet
+            - --file
+            - /scripts/create-app-user.js
+          args:
+            - mongodb://$(MONGO_INITDB_ROOT_USERNAME):$(MONGO_INITDB_ROOT_PASSWORD)@mongo:27017/admin
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-root-secret
+                  key: MONGO_INITDB_ROOT_USERNAME
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-root-secret
+                  key: MONGO_INITDB_ROOT_PASSWORD
+            - name: MONGO_APP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-app-secret
+                  key: MONGO_APP_USERNAME
+            - name: MONGO_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-app-secret
+                  key: MONGO_APP_PASSWORD
+            - name: MONGO_DATABASE
+              value: dev_be_db
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+      volumes:
+        - name: script
+          configMap:
+            name: mongo-app-user-script

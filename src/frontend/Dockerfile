@@ -11,6 +11,9 @@ RUN npm ci
 
 COPY . /usr/src/app
 
+ARG VITE_API_TOKEN
+ENV VITE_API_TOKEN=${VITE_API_TOKEN}
+
 EXPOSE 3000
 CMD ["npm", "start"]
 

@@ -45,6 +45,27 @@ resource "aws_ec2_tag" "public_subnet_elb" {
   value       = "1"
 }
 
+# Internal NLB is restricted to 3 AZs to control cost (~$16/mo per NLB).
+# Set internal_elb_subnet_ids in the module caller to the chosen subnets.
+# Defaults to 1a, 1b, 1c — the AZs that host dev cluster EKS nodes today.
+# plan-176.
+resource "aws_ec2_tag" "public_subnet_internal_elb" {
+  for_each    = toset(var.internal_elb_subnet_ids)
+  resource_id = each.value
+  key         = "kubernetes.io/role/internal-elb"
+  value       = "1"
+}
+
+# Remove the internal-elb tag from the rest so future NLB creates don't
+# pick those AZs. The EKS in-tree provider picks subnets by tag, so an
+# untagged subnet is invisible to NLB placement.
+resource "aws_ec2_tag" "public_subnet_internal_elb_remove" {
+  for_each    = toset(setsubtract(local.all_public_subnet_ids, var.internal_elb_subnet_ids))
+  resource_id = each.value
+  key         = "kubernetes.io/role/internal-elb"
+  value       = ""
+}
+
 resource "aws_ec2_tag" "public_subnet_cluster" {
   for_each    = var.cluster_name != "" ? toset(local.all_public_subnet_ids) : toset([])
   resource_id = each.value

@@ -10,6 +10,7 @@ ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-5m}"
 RESTART_GRAFANA="${RESTART_GRAFANA:-true}"
 DEV_FOLDER_UID="${DEV_FOLDER_UID:-}"
 UAT_FOLDER_UID="${UAT_FOLDER_UID:-}"
+PROD_FOLDER_UID="${PROD_FOLDER_UID:-}"
 
 GRAFANA_LOCAL_PORT="${GRAFANA_LOCAL_PORT:-3002}"
 GRAFANA_ADMIN_USER="${GRAFANA_ADMIN_USER:-admin}"
@@ -22,6 +23,7 @@ GRAFANA_TOKEN_SECRET_KEY="${GRAFANA_TOKEN_SECRET_KEY:-token}"
 GRAFANA_PARENT_FOLDER_TITLE="${GRAFANA_PARENT_FOLDER_TITLE:-React App}"
 GRAFANA_CHILD_FOLDER_TITLE="${GRAFANA_CHILD_FOLDER_TITLE:-Dev}"
 GRAFANA_UAT_CHILD_FOLDER_TITLE="${GRAFANA_UAT_CHILD_FOLDER_TITLE:-Uat}"
+GRAFANA_PROD_CHILD_FOLDER_TITLE="${GRAFANA_PROD_CHILD_FOLDER_TITLE:-Prod}"
 GRAFANA_LOGS_CHILD_FOLDER_TITLE="${GRAFANA_LOGS_CHILD_FOLDER_TITLE:-Logs}"
 LOGS_FOLDER_UID="${LOGS_FOLDER_UID:-}"
 
@@ -54,12 +56,14 @@ ensure_grafana_folder_uids() {
     GRAFANA_PARENT_FOLDER_TITLE="${GRAFANA_PARENT_FOLDER_TITLE}" \
     GRAFANA_CHILD_FOLDER_TITLE="${GRAFANA_CHILD_FOLDER_TITLE}" \
     GRAFANA_UAT_CHILD_FOLDER_TITLE="${GRAFANA_UAT_CHILD_FOLDER_TITLE}" \
+    GRAFANA_PROD_CHILD_FOLDER_TITLE="${GRAFANA_PROD_CHILD_FOLDER_TITLE}" \
     GRAFANA_LOGS_CHILD_FOLDER_TITLE="${GRAFANA_LOGS_CHILD_FOLDER_TITLE}" \
       "${helper_script}"
   )" || { echo "ERROR: Grafana folder UID resolution failed" >&2; exit 1; }
 
   DEV_FOLDER_UID="$(echo "${folder_output}" | grep '^DEV_FOLDER_UID=' | cut -d= -f2)"
   UAT_FOLDER_UID="$(echo "${folder_output}" | grep '^UAT_FOLDER_UID=' | cut -d= -f2)"
+  PROD_FOLDER_UID="$(echo "${folder_output}" | grep '^PROD_FOLDER_UID=' | cut -d= -f2)"
   LOGS_FOLDER_UID="$(echo "${folder_output}" | grep '^LOGS_FOLDER_UID=' | cut -d= -f2)"
 }
 
@@ -83,13 +87,17 @@ if [[ -n "${UAT_FOLDER_UID}" ]]; then
   echo "Replacing PLACEHOLDER_UAT_FOLDER_UID with ${UAT_FOLDER_UID}"
   sed -i "s/PLACEHOLDER_UAT_FOLDER_UID/${UAT_FOLDER_UID}/g" "${RENDERED_MANIFEST}"
 fi
+if [[ -n "${PROD_FOLDER_UID}" ]]; then
+  echo "Replacing PLACEHOLDER_PROD_FOLDER_UID with ${PROD_FOLDER_UID}"
+  sed -i "s/PLACEHOLDER_PROD_FOLDER_UID/${PROD_FOLDER_UID}/g" "${RENDERED_MANIFEST}"
+fi
 if [[ -n "${LOGS_FOLDER_UID}" ]]; then
   echo "Replacing PLACEHOLDER_LOGS_FOLDER_UID with ${LOGS_FOLDER_UID}"
   sed -i "s/PLACEHOLDER_LOGS_FOLDER_UID/${LOGS_FOLDER_UID}/g" "${RENDERED_MANIFEST}"
 fi
 
 echo "[3/5] Filter Grafana dashboard ConfigMaps"
-yq -y 'select(.kind == "ConfigMap" and (.metadata.name == "grafana-dashboard-provider" or .metadata.name == "grafana-dashboards" or .metadata.name == "grafana-uat-dashboards"))' \
+yq -y 'select(.kind == "ConfigMap" and (.metadata.name == "grafana-dashboard-provider" or .metadata.name == "grafana-dashboards" or .metadata.name == "grafana-uat-dashboards" or .metadata.name == "grafana-prod-dashboards"))' \
   "${RENDERED_MANIFEST}" >"${FILTERED_MANIFEST}"
 
 for configmap_name in grafana-dashboard-provider grafana-dashboards; do
@@ -121,4 +129,8 @@ kubectl -n "${NAMESPACE}" get configmap grafana-dashboards -o json | yq '.data |
 if kubectl -n "${NAMESPACE}" get configmap grafana-uat-dashboards >/dev/null 2>&1; then
   echo "Applied UAT dashboard keys:"
   kubectl -n "${NAMESPACE}" get configmap grafana-uat-dashboards -o json | yq '.data | keys | .[]'
+fi
+if kubectl -n "${NAMESPACE}" get configmap grafana-prod-dashboards >/dev/null 2>&1; then
+  echo "Applied Prod dashboard keys:"
+  kubectl -n "${NAMESPACE}" get configmap grafana-prod-dashboards -o json | yq '.data | keys | .[]'
 fi

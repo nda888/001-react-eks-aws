@@ -14,12 +14,10 @@ export default class App extends React.Component {
   }
 
   componentDidMount() {
-    axios
-      .get("/api")
+    axios.defaults.headers.common["Authorization"] = `Bearer ${import.meta.env.VITE_API_TOKEN}`;
+    axios.get("/api")
       .then((response) => {
-        this.setState({
-          todos: response.data.data,
-        });
+        this.setState({ todos: response.data.data });
       })
       .catch((e) => console.log("Error : ", e));
   }

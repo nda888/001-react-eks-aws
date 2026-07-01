@@ -1,0 +1,71 @@
+{
+  "uid": "demo-prod-mongodb-storage",
+  "title": "MongoDB Storage",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Prod MongoDB PVC used percent",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "targets": [
+        {
+          "expr": "100 * kubelet_volume_stats_used_bytes{namespace=\"prod\", persistentvolumeclaim=~\"mongo-data-.*\"} / kubelet_volume_stats_capacity_bytes{namespace=\"prod\", persistentvolumeclaim=~\"mongo-data-.*\"}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 7,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Prod MongoDB PVC used bytes",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "targets": [
+        {
+          "expr": "kubelet_volume_stats_used_bytes{namespace=\"prod\", persistentvolumeclaim=~\"mongo-data-.*\"}",
+          "legendFormat": "{{persistentvolumeclaim}} used",
+          "refId": "A"
+        },
+        {
+          "expr": "kubelet_volume_stats_capacity_bytes{namespace=\"prod\", persistentvolumeclaim=~\"mongo-data-.*\"}",
+          "legendFormat": "{{persistentvolumeclaim}} capacity",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 17,
+        "x": 7,
+        "y": 0
+      }
+    }
+  ]
+}

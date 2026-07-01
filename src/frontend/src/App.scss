@@ -25,18 +25,26 @@
   background-color: #efefef;
   border: 1px solid #d4d4d4;
   border-radius: 4px;
-  padding: 8px 10px 10px;
+  padding: 10px;
+
+  .alert {
+    margin-bottom: 0;
+  }
 
   .new-todo {
     display: grid;
     grid-template-columns: 1fr 136px;
     align-items: stretch;
     margin: 0;
-    padding-bottom: 8px;
-    border-bottom: 1px solid #dee2e6;
+    padding-bottom: 10px;
 
     input {
       height: 52px;
+
+      &:focus {
+        box-shadow: none;
+        border-color: #86b7fe;
+      }
     }
 
     button {

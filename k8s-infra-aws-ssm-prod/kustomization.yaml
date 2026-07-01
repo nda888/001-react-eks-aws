@@ -1,0 +1,66 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Apply: kubectl --context demo-eks-prod apply -k k8s-infra-aws-ssm/kustomization-prod
+# Keep separate from dev+uat kustomization.yaml. Excludes: metrics-server, cluster-autoscaler, prometheus, grafana — addons are a follow-up.
+resources:
+  - namespace-prod.yaml
+  - external-secrets/secretstore-prod.yaml
+  - external-secrets/mongo-root-external-secret-prod.yaml
+  - external-secrets/mongo-app-external-secret-prod.yaml
+  - external-secrets/admin-auth-external-secret-prod.yaml
+  - external-secrets/loki-writer-token.yaml
+  - external-secrets/prometheus-rw-token.yaml
+  - storageclass-gp3.yaml
+  - prometheus/serviceaccount.yaml
+  - prometheus/rbac.yaml
+  - prometheus/configmap.yaml
+  - prometheus/statefulset.yaml
+  - alloy/rbac.yaml
+  - alloy/configmap.yaml
+  - alloy/daemonset.yaml
+  - mongo/service-prod.yaml
+  - mongo/statefulset-prod.yaml
+  - mongo/create-app-user-job-prod.yaml
+  - mongo/rotate-app-user-rbac-prod.yaml
+  - mongo/rotate-app-user-cronjob-prod.yaml
+  - mongo/rotate-root-user-cronjob-prod.yaml
+  - backend/configmap-prod.yaml
+  - backend/service-prod.yaml
+  - backend/deployment-prod.yaml
+  - frontend/service-prod.yaml
+  - frontend/deployment-prod.yaml
+  - ingress-prod.yaml
+  - backend/hpa-prod.yaml
+  - frontend/hpa-prod.yaml
+
+configMapGenerator:
+  - name: mongo-rotate-script
+    namespace: prod
+    files:
+      - rotate-user.sh=mongo/scripts/rotate-app-user.sh
+    options:
+      disableNameSuffixHash: true
+  - name: mongo-root-rotate-script
+    namespace: prod
+    files:
+      - rotate-root.sh=mongo/scripts/rotate-root-user.sh
+    options:
+      disableNameSuffixHash: true
+  - name: mongo-app-user-script
+    namespace: prod
+    files:
+      - create-app-user.js=mongo/scripts/create-app-user.js
+    options:
+      disableNameSuffixHash: true
+
+images:
+  - name: prod-demo-backend
+    newName: __AWS_ACCOUNT_ID__.dkr.ecr.us-east-1.amazonaws.com/prod-demo-backend
+    newTag: latest
+  - name: prod-demo-frontend
+    newName: __AWS_ACCOUNT_ID__.dkr.ecr.us-east-1.amazonaws.com/prod-demo-frontend
+    newTag: latest
+  - name: prod-mongo-rotator
+    newName: __AWS_ACCOUNT_ID__.dkr.ecr.us-east-1.amazonaws.com/prod-mongo-rotator
+    newTag: latest

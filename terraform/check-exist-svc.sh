@@ -11,8 +11,8 @@ NC=$'\033[0m'
 ALL_ENVS=("dev")
 AWS_REGION="${AWS_REGION:-us-east-1}"
 PROJECT_TAG="demo-react-express-mongodb"
-NAME_TAG_PATTERNS="*demoeks*,*demoreact*,*demo-eks*,*demo-react*"
-GROUP_NAME_PATTERNS="*demo-eks*,*demo-react*,*demoeks*,*demoreact*"
+NAME_TAG_PATTERNS="*eks-react*,*eks-eks*,*ekscluster*,*demoeks*,*demoreact*,*demo-eks*,*demo-react*,*alb-backend*,*alb-frontend*,*nlb-*"
+GROUP_NAME_PATTERNS="*eks-react*,*eks-eks*,*ekscluster*,*demo-eks*,*demo-react*,*demoeks*,*demoreact*,*alb-backend*,*alb-frontend*,*nlb-*"
 LOG_FILE="/tmp/check-exist-svc-$(date +%s).log"
 EXIT_CODE=0
 SERVICES_CHECKED=0
@@ -38,22 +38,24 @@ PROTECTED_VPCS=0
 PROTECTED_SUBNETS=0
 PROTECTED_IGWS=0
 
-DELETE_MODE=1
+DELETE_MODE=0
 AUTO_YES=0
 DRY_RUN=0
 TARGET="all"
 
 usage() {
   cat <<USAGE
-Usage: $0 [dev|all] [--delete] [--yes] [--dry-run]
+Usage: $0 [dev|all] [delete] [-y] [--dry-run]
 
 Check Terraform service states, shared S3 backend bucket, EKS clusters, EC2 instances, Elastic IPs,
 EBS volumes, EBS snapshots, and ALB/NLB load balancers for remaining resources.
 Default: all
 
+Commands:
+  delete      Enable deletion mode (prompts for confirmation)
+
 Options:
-  ${RED}--delete${NC}    Enable deletion mode (prompts for confirmation)
-  --yes       Auto-confirm deletion (requires --delete)
+  -y          Auto-confirm deletion (requires delete)
   --dry-run   Show what would be deleted without executing
 
 Environment:
@@ -70,8 +72,8 @@ USAGE
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --delete) DELETE_MODE=1; shift ;;
-      --yes) AUTO_YES=1; shift ;;
+      delete) DELETE_MODE=1; shift ;;
+      -y) AUTO_YES=1; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
       -h|--help) usage; exit 0 ;;
       dev|all) TARGET="$1"; shift ;;
@@ -125,7 +127,7 @@ get_eks_cluster_names_from_tfvars() {
   if [[ -n "$cluster_name" ]]; then
     printf '%s\n' "$cluster_name"
   else
-    printf 'demo-eks-dev\n'
+    printf 'eks-react-dev-uat\n'
   fi
 }
 
@@ -696,7 +698,6 @@ check_eks_clusters() {
   fi
 }
 
-
 check_nat_gateways() {
   local nat_output rc
   printf "Checking NAT Gateways (region: %s) ... " "$AWS_REGION"
@@ -724,7 +725,6 @@ check_nat_gateways() {
   echo -e "${GREEN}OK${NC} (none)"
 }
 
-
 check_ecr_repos() {
   local repo_output rc
   printf "Checking ECR Repositories (region: %s) ... " "$AWS_REGION"
@@ -742,37 +742,41 @@ check_ecr_repos() {
   echo -e "${GREEN}OK${NC} (none)"
 }
 
-
-# Collect ARNs of project-related target groups created by AWS Load Balancer Controller.
-# Target group names encode the Kubernetes namespace, so we include:
-#   k8s-dev-*     (dev namespace services)
+# Collect ARNs of project-related target groups created by AWS Load Balancer Controller
+# and NLB target groups provisioned by Terraform.
+#   k8s-dev-*     (dev namespace services, ALB/NLB via Load Balancer Controller)
 #   k8s-uat-*     (uat namespace services)
+#   k8s-prod-*    (prod namespace services)
 #   k8s-monitor-* (monitoring namespace services: grafana, prometheus, etc.)
+#   nlb-dev-*     (NLB target groups provisioned by Terraform: loki, prometheus, etc.)
 collect_target_group_arns() {
   aws elbv2 describe-target-groups --region "$AWS_REGION" \
-    --query 'TargetGroups[?starts_with(TargetGroupName, `k8s-dev-`) || starts_with(TargetGroupName, `k8s-uat-`) || starts_with(TargetGroupName, `k8s-monitor-`)].TargetGroupArn' \
+    --query 'TargetGroups[?starts_with(TargetGroupName, `k8s-dev-`) || starts_with(TargetGroupName, `k8s-uat-`) || starts_with(TargetGroupName, `k8s-prod-`) || starts_with(TargetGroupName, `k8s-monitor-`) || starts_with(TargetGroupName, `nlb-dev-`)].TargetGroupArn' \
     --output text 2>/dev/null
 }
 
 check_target_groups() {
-  local tg_output rc
+  local tg_output rc tg_arns tg_count
   printf "Checking Target Groups (region: %s) ... " "$AWS_REGION"
   # AWS Load Balancer Controller target group names encode the Kubernetes namespace.
-  # Include k8s-dev-* (dev), k8s-uat-* (uat), and k8s-monitor-* (monitoring services: grafana, prometheus, etc.)
-  tg_output="$(aws elbv2 describe-target-groups --region "$AWS_REGION" \
-    --query 'TargetGroups[?starts_with(TargetGroupName, `k8s-dev-`) || starts_with(TargetGroupName, `k8s-uat-`) || starts_with(TargetGroupName, `k8s-monitor-`)].{Name:TargetGroupName,Type:TargetType,VpcId:VpcId,Protocol:Protocol}' \
-    --output table 2>&1)" && rc=0 || rc=$?
-  [[ $rc -ne 0 ]] && { echo -e "${YELLOW}WARN${NC} (TG lookup failed)"; return 0; }
-  if grep -q '|' <<<"$tg_output"; then
-    echo -e "${RED}FOUND${NC}"
-    echo "$tg_output"
-    TARGET_GROUPS_FOUND=1
-    EXIT_CODE=2
+  # Include k8s-dev-* (dev), k8s-uat-* (uat), k8s-prod-* (prod), k8s-monitor-* (monitoring services),
+  # and nlb-dev-* (NLB target groups from Terraform: loki, prometheus, etc.)
+  tg_arns="$(collect_target_group_arns || true)"
+  if [[ -z "$tg_arns" || "$tg_arns" == "None" ]]; then
+    echo -e "${GREEN}OK${NC} (none)"
     return 0
   fi
-  echo -e "${GREEN}OK${NC} (none)"
+  tg_count="$(wc -w <<<"$tg_arns" | tr -d ' ')"
+  tg_output="$(aws elbv2 describe-target-groups --region "$AWS_REGION" \
+    --target-group-arns $tg_arns \
+    --query 'TargetGroups[*].{Name:TargetGroupName,Type:TargetType,VpcId:VpcId,Protocol:Protocol}' \
+    --output table 2>&1)" && rc=0 || rc=$?
+  [[ $rc -ne 0 ]] && { echo -e "${YELLOW}WARN${NC} (TG lookup failed)"; return 0; }
+  echo -e "${RED}FOUND${NC} (${tg_count})"
+  echo "$tg_output"
+  TARGET_GROUPS_FOUND=$tg_count
+  EXIT_CODE=2
 }
-
 
 check_vpcs() {
   local vpc_ids prot_vpc_ids vpc_count prot_count vpc_output prot_output rc
@@ -819,7 +823,6 @@ check_vpcs() {
   fi
 }
 
-
 check_subnets() {
   local subnet_ids prot_subnet_ids subnet_count prot_count subnet_output prot_output rc
   printf "Checking Subnets (region: %s) ... " "$AWS_REGION"
@@ -864,7 +867,6 @@ check_subnets() {
     echo -e "${GREEN}OK${NC} (none)"
   fi
 }
-
 
 check_internet_gateways() {
   local igw_ids prot_igw_ids igw_count prot_count igw_output prot_output rc
@@ -911,7 +913,6 @@ check_internet_gateways() {
   fi
 }
 
-
 check_security_groups() {
   local sg_ids prot_sg_ids sg_count prot_count sg_output prot_output rc
   printf "Checking Security Groups (region: %s) ... " "$AWS_REGION"
@@ -957,7 +958,6 @@ check_security_groups() {
   fi
 }
 
-
 check_launch_templates() {
   local lt_output rc
   printf "Checking Launch Templates (region: %s) ... " "$AWS_REGION"
@@ -975,7 +975,6 @@ check_launch_templates() {
   fi
   echo -e "${GREEN}OK${NC} (none)"
 }
-
 
 check_iam_roles() {
   local role_output rc
@@ -995,7 +994,6 @@ check_iam_roles() {
   fi
   echo -e "${GREEN}OK${NC} (none)"
 }
-
 
 # ---------------------------------------------------------------------------
 # Resource collection functions (for deletion mode)
@@ -1021,8 +1019,8 @@ collect_eip_ids() {
 collect_volume_ids() {
   aws ec2 describe-volumes \
     --region "$AWS_REGION" \
-    --filters "Name=status,Values=available" \
-    --query 'Volumes[*].VolumeId' \
+    --filters "Name=status,Values=available,in-use" \
+    --query 'Volumes[?State!=`deleting`].VolumeId' \
     --output text 2>/dev/null
 }
 
@@ -1038,7 +1036,6 @@ collect_eks_cluster_names() {
   aws eks list-clusters --region "$AWS_REGION" \
     --query 'clusters[]' --output text 2>/dev/null
 }
-
 
 dedupe_ids() {
   tr '\t' '\n' | tr ' ' '\n' | awk 'NF && $0 != "None"' | sort -u | xargs
@@ -1084,9 +1081,8 @@ filter_default_vpc_ids() {
   done | xargs
 }
 
-
 collect_security_group_ids() {
-  local tagged_ids named_ids groupname_ids eks_ids
+  local tagged_ids named_ids groupname_ids eks_ids alb_ids vpc_ids
 
   tagged_ids="$(aws ec2 describe-security-groups --region "$AWS_REGION" \
     --filters "Name=tag:Project,Values=${PROJECT_TAG}" \
@@ -1098,8 +1094,10 @@ collect_security_group_ids() {
     --filters "Name=group-name,Values=${GROUP_NAME_PATTERNS}" \
     --query 'SecurityGroups[*].GroupId' --output text 2>/dev/null || true)"
   eks_ids="$(collect_eks_cluster_security_group_ids || true)"
+  alb_ids="$(collect_alb_controller_security_group_ids || true)"
+  vpc_ids="$(collect_eks_vpc_security_group_ids || true)"
 
-  printf '%s\n%s\n%s\n%s\n' "$tagged_ids" "$named_ids" "$groupname_ids" "$eks_ids" | dedupe_ids
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$tagged_ids" "$named_ids" "$groupname_ids" "$eks_ids" "$alb_ids" "$vpc_ids" | dedupe_ids
 }
 
 # Collect SG IDs by EKS ownership tags (aws:eks:cluster-name, kubernetes.io/cluster/<name>=owned)
@@ -1112,6 +1110,32 @@ collect_eks_cluster_security_group_ids() {
     printf '%s\n' "$(aws ec2 describe-security-groups --region "$AWS_REGION" \
       --filters "Name=tag:kubernetes.io/cluster/${cluster},Values=owned" \
       --query 'SecurityGroups[*].GroupId' --output text 2>/dev/null || true)"
+  done | dedupe_ids
+}
+
+# Collect SG IDs tagged by AWS Load Balancer Controller (elbv2.k8s.aws/cluster=<name>).
+# Catches ALB-managed SGs that lack Project tag.
+collect_alb_controller_security_group_ids() {
+  local cluster
+  for cluster in $(get_eks_cluster_names_from_tfvars || true); do
+    aws ec2 describe-security-groups --region "$AWS_REGION" \
+      --filters "Name=tag:elbv2.k8s.aws/cluster,Values=${cluster}" \
+      --query 'SecurityGroups[*].GroupId' --output text 2>/dev/null || true
+  done | dedupe_ids
+}
+
+# SGs in EKS cluster VPCs. Skips AWS default + cluster control-plane SGs.
+collect_eks_vpc_security_group_ids() {
+  local cluster vpc vpc_csv
+  for cluster in $(get_eks_cluster_names_from_tfvars || true); do
+    vpc="$(aws eks describe-cluster --name "$cluster" --region "$AWS_REGION" \
+      --query 'cluster.resourcesVpcConfig.vpcId' --output text 2>/dev/null || true)"
+    [[ -z "$vpc" || "$vpc" == "None" ]] && continue
+    vpc_csv="${vpc// /,}"
+    aws ec2 describe-security-groups --region "$AWS_REGION" \
+      --filters "Name=vpc-id,Values=${vpc_csv}" \
+      --query 'SecurityGroups[?GroupName != `default` && !starts_with(GroupName, `eks-cluster-sg-`)].GroupId' \
+      --output text 2>/dev/null || true
   done | dedupe_ids
 }
 
@@ -1139,7 +1163,6 @@ collect_protected_default_security_group_ids() {
   [[ -z "$sg_ids" || "$sg_ids" == "None" ]] && return 0
   printf '%s' "$sg_ids" | dedupe_ids
 }
-
 
 collect_related_vpc_ids() {
   local tagged_vpc_ids sg_ids sg_vpc_ids
@@ -1175,7 +1198,6 @@ collect_protected_default_vpc_ids() {
   [[ -z "$all_vpcs" || "$all_vpcs" == "None" ]] && return 0
   filter_default_vpc_ids <<<"$all_vpcs"
 }
-
 
 collect_related_subnet_ids() {
   local tagged_subnet_ids vpc_ids vpc_subnet_ids vpc_csv
@@ -1235,7 +1257,6 @@ collect_protected_default_subnet_ids() {
     --query 'Subnets[*].SubnetId' --output text 2>/dev/null | dedupe_ids
 }
 
-
 collect_related_igw_ids() {
   local tagged_igw_ids vpc_ids vpc_igw_ids vpc_csv
 
@@ -1286,13 +1307,11 @@ collect_protected_default_igw_ids() {
     --query 'InternetGateways[*].InternetGatewayId' --output text 2>/dev/null | dedupe_ids
 }
 
-
 collect_ecr_repos() {
   aws ecr describe-repositories --region "$AWS_REGION" \
     --query 'repositories[?contains(repositoryName, `demo-react`) || contains(repositoryName, `demo-express`)].repositoryName' \
     --output text 2>/dev/null
 }
-
 
 # ---------------------------------------------------------------------------
 # Deletion helper functions
@@ -1373,6 +1392,31 @@ delete_ebs_volumes() {
   local id rc=0 err_file
   for id in $ids; do
     echo -n "  $id ... "
+    # In-use volumes: force-detach attachments then wait for available state.
+    local vol_state
+    vol_state="$(aws ec2 describe-volumes --region "$AWS_REGION" \
+      --volume-ids "$id" \
+      --query 'Volumes[0].State' --output text 2>/dev/null || true)"
+    if [[ "$vol_state" == "in-use" ]]; then
+      local attachments att
+      attachments="$(aws ec2 describe-volumes --region "$AWS_REGION" \
+        --volume-ids "$id" \
+        --query 'Volumes[0].Attachments[*].AttachmentId' \
+        --output text 2>/dev/null || true)"
+      for att in $attachments; do
+        aws ec2 detach-volume --region "$AWS_REGION" \
+          --volume-id "$id" --attachment-id "$att" \
+          --force 2>>"$LOG_FILE" || true
+      done
+      local _i
+      for _i in 1 2 3 4 5 6 7 8 9 10; do
+        vol_state="$(aws ec2 describe-volumes --region "$AWS_REGION" \
+          --volume-ids "$id" \
+          --query 'Volumes[0].State' --output text 2>/dev/null || true)"
+        [[ "$vol_state" == "available" ]] && break
+        sleep 5
+      done
+    fi
     err_file="$(mktemp)"
     if aws ec2 delete-volume --region "$AWS_REGION" --volume-id "$id" 2>"$err_file"; then
       echo -e "${GREEN}OK${NC}"
@@ -1677,8 +1721,13 @@ delete_eks_clusters() {
     project_tag="$(aws eks describe-cluster --name "$cluster" --region "$AWS_REGION" \
       --query 'cluster.tags.Project' --output text 2>/dev/null)"
     if [[ "$project_tag" != "None" && -n "$project_tag" && "$project_tag" != "$PROJECT_TAG" ]]; then
-      echo -e "  ${YELLOW}Skipping $cluster (tag Project=$project_tag)${NC}"
-      continue
+      # Allow cluster whose name starts with the project token (e.g. eks-react-dev-uat).
+      if [[ "$cluster" == eks-react-dev-uat* || "$cluster" == demo-react* ]]; then
+        echo -e "  ${YELLOW}Note: $cluster tag Project=$project_tag, but name matches project pattern; proceeding.${NC}"
+      else
+        echo -e "  ${YELLOW}Skipping $cluster (tag Project=$project_tag)${NC}"
+        continue
+      fi
     fi
     echo -e "  ${CYAN}Cluster: ${cluster}${NC}"
 
@@ -1803,7 +1852,6 @@ delete_eks_clusters() {
   return $rc
 }
 
-
 delete_target_groups() {
   local tg_arns
   tg_arns="$(collect_target_group_arns || true)"
@@ -1833,7 +1881,6 @@ delete_target_groups() {
   return $rc
 }
 
-
 delete_ecr_repos() {
   local repos
   repos="$(collect_ecr_repos || true)"
@@ -1860,7 +1907,6 @@ delete_ecr_repos() {
   done
   return $rc
 }
-
 
 delete_orphan_network_interfaces_for_sg() {
   local sg="$1" eni_json eni_ids eni rc=0 err_file
@@ -1915,7 +1961,6 @@ delete_orphan_network_interfaces_for_sg() {
   return $rc
 }
 
-
 log_security_group_dependency_context() {
   local sg="$1" vpc_id eni_context ref_context
 
@@ -1950,7 +1995,6 @@ log_security_group_dependency_context() {
     ' 2>&1 || true)"
   log_error "security group $sg rule reference context: $ref_context"
 }
-
 
 # ---------------------------------------------------------------------------
 # Proactive SG dependency inspection
@@ -2047,9 +2091,7 @@ inspect_sg_dependencies() {
           if is_default_security_group_id "$ref_sg"; then
             echo "    SG ref blocker: $ref_sg (default SG) -> $sg"
             blocker_count=$((blocker_count + 1))
-          elif ! array_contains "$ref_sg" $project_sgs; then
-            echo "    SG ref blocker: $ref_sg (non-project SG) -> $sg"
-            blocker_count=$((blocker_count + 1))
+          # ponytail: non-default SGs handled by remove_safe_sg_rule_refs
           fi
         done
       fi
@@ -2059,7 +2101,6 @@ inspect_sg_dependencies() {
   [[ "$blocker_count" -gt 0 ]] && return 1
   return 0
 }
-
 
 # remove_safe_sg_rule_refs - revoke rules in project SGs that reference target SG
 # Only revokes rules from SGs in the project SG candidate list
@@ -2107,7 +2148,8 @@ remove_safe_sg_rule_refs() {
   if [[ -n "$ingress_ref_sgs" ]]; then
     for ref_sg in $ingress_ref_sgs; do
       [[ "$ref_sg" == "$sg" ]] && continue
-      array_contains "$ref_sg" $project_sgs || continue
+      # ponytail: skip only default SGs — all non-default SGs in VPC get refs revoked
+      is_default_security_group_id "$ref_sg" && continue
       while IFS= read -r permission; do
         [[ -z "$permission" ]] && continue
         echo -n "    revoke ingress $ref_sg -> $sg ... "
@@ -2152,7 +2194,8 @@ remove_safe_sg_rule_refs() {
   if [[ -n "$egress_ref_sgs" ]]; then
     for ref_sg in $egress_ref_sgs; do
       [[ "$ref_sg" == "$sg" ]] && continue
-      array_contains "$ref_sg" $project_sgs || continue
+      # ponytail: skip only default SGs — all non-default SGs in VPC get refs revoked
+      is_default_security_group_id "$ref_sg" && continue
       while IFS= read -r permission; do
         [[ -z "$permission" ]] && continue
         echo -n "    revoke egress $ref_sg -> $sg ... "
@@ -2196,7 +2239,6 @@ remove_safe_sg_rule_refs() {
 
   return $rc
 }
-
 
 retry_delete_security_group_after_dependency_cleanup() {
   local sg="$1" attempt max_attempts=6 sleep_seconds=10 err_file err_text
@@ -2302,9 +2344,42 @@ delete_security_groups() {
     fi
     rm -f "$err_file"
   done
+
+  # Sweep EKS cluster SGs that lost their cluster-ownership tag during cluster delete.
+  echo "Sweeping EKS cluster security groups (post-delete)..."
+  local eks_sg_arns eks_sg eks_err eks_err_text
+  eks_sg_arns="$(aws ec2 describe-security-groups --region "$AWS_REGION" \
+    --filters "Name=group-name,Values=eks-cluster-sg-*" \
+    --query 'SecurityGroups[?VpcId != \`null\`].GroupId' \
+    --output text 2>/dev/null || true)"
+  if [[ -n "$eks_sg_arns" && "$eks_sg_arns" != "None" ]]; then
+    for eks_sg in $eks_sg_arns; do
+      if is_default_security_group_id "$eks_sg"; then continue; fi
+      echo -n "  $eks_sg ... "
+      delete_orphan_network_interfaces_for_sg "$eks_sg" || true
+      eks_err="$(mktemp)"
+      if aws ec2 delete-security-group --group-id "$eks_sg" \
+          --region "$AWS_REGION" 2>"$eks_err"; then
+        echo -e "${GREEN}OK${NC}"
+      else
+        eks_err_text="$(cat "$eks_err")"
+        cat "$eks_err" >> "$LOG_FILE"
+        if is_resource_absent "$eks_err_text"; then
+          echo -e "${GREEN}OK${NC} (already absent)"
+        elif grep -q 'DependencyViolation' <<<"$eks_err_text"; then
+          echo -e "${YELLOW}DependencyViolation${NC} — cleaning..."
+          retry_delete_security_group_after_dependency_cleanup "$eks_sg" || rc=1
+        else
+          echo -e "${RED}FAIL${NC}"
+          log_error "delete-security-group failed for $eks_sg"
+          rc=1
+        fi
+      fi
+      rm -f "$eks_err"
+    done
+  fi
   return $rc
 }
-
 
 delete_launch_templates() {
   local lt_ids
@@ -2335,7 +2410,6 @@ delete_launch_templates() {
   return $rc
 }
 
-
 delete_iam_roles() {
   local roles
   roles="$(aws iam list-roles \
@@ -2362,6 +2436,26 @@ delete_iam_roles() {
         fi
       done
     fi
+    # EKS node roles carry an instance profile; aws iam delete-role rejects otherwise.
+    echo -n "    Remove instance profiles ... "
+    local profiles prof
+    profiles="$(aws iam list-instance-profiles-for-role \
+      --role-name "$role" \
+      --query 'InstanceProfiles[*].InstanceProfileName' \
+      --output text 2>/dev/null || true)"
+    if [[ -n "$profiles" && "$profiles" != "None" ]]; then
+      for prof in $profiles; do
+        aws iam remove-role-from-instance-profile \
+          --instance-profile-name "$prof" --role-name "$role" \
+          2>>"$LOG_FILE" || true
+        aws iam delete-instance-profile \
+          --instance-profile-name "$prof" \
+          2>>"$LOG_FILE" || true
+      done
+      echo -e "${GREEN}OK${NC}"
+    else
+      echo -e "${GREEN}OK${NC} (none)"
+    fi
     echo -n "    Delete role $role ... "
     err_file="$(mktemp)"
     if aws iam delete-role --role-name "$role" 2>"$err_file"; then
@@ -2380,7 +2474,6 @@ delete_iam_roles() {
   done
   return $rc
 }
-
 
 # ---------------------------------------------------------------------------
 # User confirmation prompt
@@ -2415,6 +2508,19 @@ execute_deletions() {
 
   # 0. EKS clusters (fargate, addons, nodegroups, then cluster)
   delete_eks_clusters
+
+  # 0.5. Wait for EKS node EC2 instances to fully terminate so root EBS volumes detach.
+  echo "Waiting for EKS node EC2 termination..."
+  local _i remaining
+  for _i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    remaining="$(aws ec2 describe-instances --region "$AWS_REGION" \
+      --filters "Name=tag:Project,Values=${PROJECT_TAG}" \
+      "Name=instance-state-name,Values=pending,running,stopping,shutting-down" \
+      --query 'Reservations[].Instances[].InstanceId' \
+      --output text 2>/dev/null || true)"
+    [[ -z "$remaining" || "$remaining" == "None" ]] && break
+    sleep 10
+  done
 
   # 1. NAT Gateways (must delete before EIP release)
   delete_nat_gateways

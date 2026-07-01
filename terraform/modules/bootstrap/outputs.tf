@@ -21,7 +21,14 @@ output "next_steps" {
      3. UAT deploy (app only, shares EKS/ALB with DEV):
         ./an-deploy uat ecr
         ./an-deploy uat secrets
-     4. Delete flow:
+     4. PROD deploy (separate EKS/ALB/SSM/IAM/MongoDB):
+        ./an-deploy prod networking
+        ./an-deploy prod ecr
+        ./an-deploy prod eks
+        ./an-deploy prod eks-alb
+        ./an-deploy prod secrets
+     5. Delete flow:
+        ./an-deploy prod-destroy all
         ./an-deploy uat-destroy all
         ./an-deploy dev-destroy all
         ./an-deploy dev-destroy bootstrap

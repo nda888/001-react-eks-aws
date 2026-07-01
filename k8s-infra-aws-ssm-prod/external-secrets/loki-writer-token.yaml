@@ -1,0 +1,17 @@
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: loki-writer-token
+  namespace: prod
+spec:
+  refreshInterval: 5m
+  secretStoreRef:
+    name: aws-ssm
+    kind: ClusterSecretStore
+  target:
+    name: loki-writer-token
+    creationPolicy: Owner
+  data:
+    - secretKey: token
+      remoteRef:
+        key: /demo-eks-prod/monitor/loki_writer_token

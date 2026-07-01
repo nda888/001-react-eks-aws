@@ -10,6 +10,11 @@ const Todo = mongoose.model("Todo", {
     required: true,
     maxlength: 200,
   },
+  ownerId: {
+    type: String,
+    default: "shared",
+    required: true,
+  },
 });
 
 module.exports = { Todo };

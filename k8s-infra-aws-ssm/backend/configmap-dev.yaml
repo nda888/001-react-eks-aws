@@ -1,9 +1,0 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: backend-config
-  namespace: dev
-data:
-  NODE_ENV: development
-  PORT: "3000"
-  CORS_ORIGINS: "https://demo-react-eks.h0m3.xyz,http://localhost:3000"

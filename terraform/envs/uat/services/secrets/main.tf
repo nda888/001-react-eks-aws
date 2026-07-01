@@ -83,8 +83,9 @@ locals {
   }
 
   ssm_parameter_arn_prefix                      = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.ssm_prefix}/*"
+  app_ssm_parameter_arn_prefix                  = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.app_ssm_prefix}/*"
   grafana_image_render_ssm_parameter_arn_prefix = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.grafana_image_render_ssm_prefix}/*"
-  monitoring_ssm_parameter_arn_prefix           = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.monitoring_ssm_prefix}/*"
+  monitor_ssm_parameter_arn_prefix              = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.monitor_ssm_prefix}/*"
 
   oidc_provider_url = data.terraform_remote_state.eks.outputs.oidc_provider_url
   oidc_provider_arn = data.terraform_remote_state.eks.outputs.oidc_provider_arn
@@ -140,8 +141,9 @@ data "aws_iam_policy_document" "eso_ssm_read" {
     ]
     resources = [
       local.ssm_parameter_arn_prefix,
+      local.app_ssm_parameter_arn_prefix,
       local.grafana_image_render_ssm_parameter_arn_prefix,
-      local.monitoring_ssm_parameter_arn_prefix,
+      local.monitor_ssm_parameter_arn_prefix,
     ]
   }
 }
@@ -307,21 +309,5 @@ resource "aws_ssm_parameter" "grafana_image_render_auth_token" {
   name  = "${var.grafana_image_render_ssm_prefix}/grafana_image_render_auth_token"
   type  = "SecureString"
   value = random_password.grafana_image_render.result
-  tags  = local.common_tags
-}
-
-# ---------------------------------------------------------------------------
-# Initial Prometheus basic-auth SSM SecureString parameter
-# ---------------------------------------------------------------------------
-
-resource "random_password" "prometheus_basic_auth" {
-  length  = 32
-  special = false
-}
-
-resource "aws_ssm_parameter" "prometheus_basic_auth" {
-  name  = "${var.monitoring_ssm_prefix}/prometheus_basic_auth"
-  type  = "SecureString"
-  value = "${var.prometheus_basic_auth_username}:${random_password.prometheus_basic_auth.result}"
   tags  = local.common_tags
 }
