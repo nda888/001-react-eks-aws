@@ -122,7 +122,7 @@ Each overlay has its own `kustomization.yaml` with full architecture, routing, s
 ### Deploy
 
 ```bash
-script/deploy-eks-aws-ssm-react.sh dev     # dev/UAT cluster
+script/deploy-eks-aws-ssm-react.sh dev     # dev/uat cluster
 script/deploy-eks-aws-ssm-react.sh prod    # prod cluster (separate EKS)
 ```
 
