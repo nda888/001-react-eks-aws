@@ -93,7 +93,7 @@ Reusable modules include bootstrap state, networking, EKS, ECR, ALB controller, 
 
 ## Kubernetes deployment
 
-**`k8s-infra-aws-ssm-dev-uat/`** — dev and UAT overlays on a shared EKS cluster. Contains:
+**`k8s-infra-aws-ssm-dev-uat/`** — Dev and UAT overlays on a shared EKS cluster. Contains:
 
 | Directory | Contents |
 | --- | --- |
@@ -117,7 +117,7 @@ Reusable modules include bootstrap state, networking, EKS, ECR, ALB controller, 
 | `prometheus/` `grafana/` `alloy/` | Metrics/logs shipped to dev cluster; dashboards rendered there |
 | `namespace-prod.yaml` `storageclass-gp3.yaml` | Namespace and gp3 StorageClass |
 
-Each overlay has its own `kustomization.yaml` and `README.md` with full architecture, routing, storage, and scheduling details.
+Each overlay has its own `kustomization.yaml` with full architecture, routing, storage, and scheduling details.
 
 ### Deploy
 
