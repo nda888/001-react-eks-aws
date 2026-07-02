@@ -93,10 +93,6 @@ Reusable modules include bootstrap state, networking, EKS, ECR, ALB controller, 
 
 ## Kubernetes deployment
 
-Manifests split across three directories as a Kustomize overlay structure:
-
-**`k8s-infra-aws-ssm/`** — base layer (shared by all environments).
-
 **`k8s-infra-aws-ssm-dev-uat/`** — dev and UAT overlays on a shared EKS cluster. Contains:
 
 | Directory | Contents |
