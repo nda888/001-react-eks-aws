@@ -93,28 +93,51 @@ Reusable modules include bootstrap state, networking, EKS, ECR, ALB controller, 
 
 ## Kubernetes deployment
 
-`k8s-infra-aws-ssm/` contains manifests for:
+Manifests split across three directories as a Kustomize overlay structure:
 
-- Namespace and gp3 StorageClass
-- Frontend Deployment, Service, HPA
-- Backend Deployment, Service, HPA, ConfigMap
-- MongoDB StatefulSet, Service, app-user job, rotation CronJobs/RBAC
-- External Secrets resources backed by AWS SSM Parameter Store
-- ALB Ingress routing
-- Prometheus, Grafana, Loki, Alloy
-- Metrics Server and Cluster Autoscaler
+**`k8s-infra-aws-ssm/`** — base layer (shared by all environments).
 
-Ingress routes:
+**`k8s-infra-aws-ssm-dev-uat/`** — dev and UAT overlays on a shared EKS cluster. Contains:
 
-| Path | Service |
+| Directory | Contents |
 | --- | --- |
-| `/api` | `backend:3000` |
-| `/` | `frontend:3000` |
+| `frontend/` `backend/` | Deployment, Service, HPA per env (dev/uat) |
+| `mongo/` | StatefulSet, Service, app-user job, rotation CronJobs/RBAC, scripts |
+| `external-secrets/` | SecretStore + ExternalSecret resources backed by AWS SSM |
+| `ingress-dev.yaml` `ingress-uat.yaml` | ALB Ingress (shared IngressGroup with monitor services) |
+| `prometheus/` `grafana/` `loki/` `alloy/` | Observability stack in `monitor` namespace |
+| `metrics-server/` | Cluster metrics for HPA |
+| `cluster-autoscaler/` | Node scaling via ASG tag discovery |
+| `namespace.yaml` `storageclass-gp3.yaml` | Namespaces and gp3 StorageClass |
 
-Get ALB DNS after deployment:
+**`k8s-infra-aws-ssm-prod/`** — prod overlay on a separate EKS cluster. Contains:
+
+| Directory | Contents |
+| --- | --- |
+| `frontend/` `backend/` | Deployment, Service, HPA |
+| `mongo/` | StatefulSet, Service, app-user job, rotation CronJobs/RBAC, scripts |
+| `external-secrets/` | ClusterSecretStore + ExternalSecret resources backed by AWS SSM |
+| `ingress-prod.yaml` | ALB Ingress (standalone, no shared group) |
+| `prometheus/` `grafana/` `alloy/` | Metrics/logs shipped to dev cluster; dashboards rendered there |
+| `namespace-prod.yaml` `storageclass-gp3.yaml` | Namespace and gp3 StorageClass |
+
+Each overlay has its own `kustomization.yaml` and `README.md` with full architecture, routing, storage, and scheduling details.
+
+### Deploy
 
 ```bash
+script/deploy-eks-aws-ssm-react.sh dev     # dev/UAT cluster
+script/deploy-eks-aws-ssm-react.sh prod    # prod cluster (separate EKS)
+```
+
+### ALB DNS
+
+```bash
+# dev/UAT
 kubectl get ingress demo-react-eks -n dev -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+
+# prod
+kubectl --context eks-react-prod get ingress elb-react-eks-prod -n prod -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
 ```
 
 ## Deployment scripts
